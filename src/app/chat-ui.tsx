@@ -96,6 +96,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const userNavigatedRef = useRef(false);
 
   // Auto scroll to latest message
   useEffect(() => {
@@ -129,7 +130,7 @@ export default function ChatUI({ user }: ChatUIProps) {
     fetch("/api/chat/history")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!active || !data) return;
+        if (!active || !data || userNavigatedRef.current) return;
         if (data.sessions) setSessions(data.sessions);
         if (data.activeSessionId) setActiveSessionId(data.activeSessionId);
         if (data.messages && data.messages.length > 0) {
@@ -156,6 +157,7 @@ export default function ChatUI({ user }: ChatUIProps) {
   }, []);
 
   const handleSelectSession = async (sessionId: string) => {
+    userNavigatedRef.current = true;
     if (sessionId === activeSessionId) return;
     setActiveSessionId(sessionId);
     setIsLoading(true);
@@ -184,6 +186,7 @@ export default function ChatUI({ user }: ChatUIProps) {
   };
 
   const handleNewChat = () => {
+    userNavigatedRef.current = true;
     const newSessionId = generateUniqueId("session");
     setActiveSessionId(newSessionId);
     setMessages([]);
@@ -294,6 +297,7 @@ export default function ChatUI({ user }: ChatUIProps) {
   };
 
   const handleSendMessage = async (textToSend?: string) => {
+    userNavigatedRef.current = true;
     const queryText = (textToSend || input).trim();
     if (!queryText || isLoading) return;
 
