@@ -23,7 +23,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       issuer: `https://login.microsoftonline.com/${config.azure.tenantId}/v2.0`,
       authorization: {
         params: {
-          scope: "openid profile email User.Read",
+          scope: "openid profile email User.Read Files.Read offline_access",
         },
       },
     }),
@@ -91,21 +91,34 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .single();
 
         if (!existingUser) {
-          await supabase.from("users").insert({
-            email: user.email.toLowerCase(),
-            name: user.name ?? user.email.split("@")[0],
-            avatar_url: user.image ?? null,
-            auth_provider: "azure-ad",
-          });
+          const { data: newUser } = await supabase
+            .from("users")
+            .insert({
+              email: user.email.toLowerCase(),
+              name: user.name ?? user.email.split("@")[0],
+              avatar_url: user.image ?? null,
+              auth_provider: "azure-ad",
+            })
+            .select("id")
+            .single();
+
+          if (newUser) {
+            user.id = newUser.id;
+          }
+        } else {
+          user.id = existingUser.id;
         }
       }
 
       return true;
     },
 
-    async jwt({ token, user }) {
+    async jwt({ token, user, account }) {
       if (user) {
         token.id = user.id;
+      }
+      if (account?.access_token) {
+        token.accessToken = account.access_token;
       }
       return token;
     },
@@ -113,6 +126,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (session.user && token.id) {
         session.user.id = token.id as string;
+      }
+      if (token.accessToken) {
+        (session as any).accessToken = token.accessToken;
       }
       return session;
     },

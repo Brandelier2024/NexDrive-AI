@@ -1,7 +1,6 @@
-import { GoogleGenAI } from "@google/genai";
 import { config } from "@/lib/config";
-import { isGeminiConfigured } from "@/lib/crawler/vision-describer";
 import { FolderCard, OneDriveRecord } from "@/lib/types";
+import { executeWithMultiProviderFallback } from "@/lib/llm/multi-provider";
 
 /**
  * Formats retrieved records for the LLM prompt context
@@ -101,16 +100,20 @@ export function generateDeterministicAnswer(
   ];
 
   for (const card of folderCards) {
-    lines.push(`📁 **[Open OneDrive Folder: ${card.folder_path}](${card.folder_web_url})**\n`);
+    const scopeLabel = card.is_personal ? "Personal OneDrive" : "Company OneDrive";
+    const badge = card.is_personal ? " *(Personal)*" : "";
+    lines.push(`📁 **[Open ${scopeLabel} Folder: ${card.folder_path}](${card.folder_web_url})**${badge}\n`);
 
     if (card.matched_files.length > 0) {
       lines.push("Matching media files inside:");
       for (const file of card.matched_files) {
         const icon = file.record_type === "video" ? "🎬" : "🖼️";
-        const desc = file.visual_summary || file.visual_tags || "Company media asset";
+        const desc = file.visual_summary || file.visual_tags || (card.is_personal ? "Personal file" : "Company media asset");
         lines.push(`- ${icon} [${file.name}](${file.file_web_url}) — *${desc}*`);
       }
       lines.push("");
+    } else {
+      lines.push(`*(${card.is_personal ? "Personal" : "Company"} folder directory — click the link above to open and browse all files inside)*\n`);
     }
   }
 
@@ -119,38 +122,35 @@ export function generateDeterministicAnswer(
 }
 
 /**
- * Executes the RAG Generation pipeline with Gemini 2.5 Flash and strict URL guardrails
+ * Executes the RAG Generation pipeline with Multi-Provider Key Pools (Gemini + Groq)
+ * and strict URL guardrails (guaranteed zero URL hallucinations).
  */
 export async function generateRagAnswer(
   query: string,
   retrievedRecords: OneDriveRecord[],
   folderCards: FolderCard[]
 ): Promise<string> {
-  if (retrievedRecords.length === 0) {
+  // If no items matched in OneDrive, return instantly without waiting for an LLM
+  if (retrievedRecords.length === 0 || folderCards.length === 0) {
     return "I couldn't find any matching folder or media in OneDrive for that query.";
   }
 
-  if (!isGeminiConfigured()) {
-    return generateDeterministicAnswer(query, folderCards);
-  }
+  const formattedRecords = formatRetrievedRecords(retrievedRecords);
 
-  try {
-    const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
-    const formattedRecords = formatRetrievedRecords(retrievedRecords);
-
-    const systemInstruction = `You are the Company OneDrive Media Locator Assistant. Your job is to help employees quickly find the exact OneDrive folder or media asset they need and provide a direct clickable link to open it.
+  const systemInstruction = `You are the Company OneDrive Media Locator Assistant. Your job is to help employees quickly find the exact OneDrive folder or media asset they need and provide a direct clickable link to open it.
 
 Strict Rules:
 1. Answer using ONLY the records inside <retrieved_onedrive_items>.
 2. NEVER invent, shorten, or modify any URL. Copy folder_web_url and file_web_url character-for-character.
 3. Always group results by their Parent Folder first and format as a clickable Markdown hyperlink:
    - 📁 **[Open OneDrive Folder: {folder_path}]({folder_web_url})**
-4. Beneath each folder, list the top matching images/videos with direct links:
+4. If a folder was retrieved (such as an employee or team folder, even if no child media files are indexed inside it), confirm that the folder exists in OneDrive and provide its link directly.
+5. Beneath each folder, list any matching images/videos with direct links:
    - 🎬 [{name}]({file_web_url}) — *{brief description of why it matched}* (for videos)
    - 🖼️ [{name}]({file_web_url}) — *{brief description of why it matched}* (for photos/images)
-5. If no relevant folder or file is found in <retrieved_onedrive_items>, say: "I couldn't find any matching folder or media in OneDrive for that query."`;
+6. If no relevant folder or file is found in <retrieved_onedrive_items>, say: "I couldn't find any matching folder or media in OneDrive for that query."`;
 
-    const userPrompt = `<retrieved_onedrive_items>
+  const userPrompt = `<retrieved_onedrive_items>
 ${formattedRecords}
 </retrieved_onedrive_items>
 
@@ -158,26 +158,18 @@ User Query: "${query}"
 
 Provide a clean, helpful response formatted strictly according to the rules above.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: `${systemInstruction}\n\n${userPrompt}` }],
-        },
-      ],
-      config: {
-        temperature: 0.0, // Strict zero hallucination setting
-      },
-    });
+  try {
+    // Phase 1 (Gemini Key Pool) -> Phase 2 (Groq Key Pool) with automated load balancing & failover
+    const llmResult = await executeWithMultiProviderFallback(systemInstruction, userPrompt, 4000);
 
-    const rawText = response.text || "";
-
-    // Apply strict URL validation guardrail
-    const sanitizedText = validateAndSanitizeUrls(rawText, retrievedRecords);
-    return sanitizedText;
+    if (llmResult?.text && llmResult.text.trim()) {
+      // Apply strict URL validation guardrail (zero hallucinated links)
+      return validateAndSanitizeUrls(llmResult.text, retrievedRecords);
+    }
   } catch (error) {
-    console.warn("[RAG] Gemini generation failed, falling back to deterministic answer:", error);
-    return generateDeterministicAnswer(query, folderCards);
+    console.warn("[RAG Chain] Multi-provider execution error, using deterministic fallback:", error);
   }
+
+  // Phase 3: Instant Deterministic Answer (0ms latency, zero hallucinations, 100% verified links)
+  return generateDeterministicAnswer(query, folderCards);
 }

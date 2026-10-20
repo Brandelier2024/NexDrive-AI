@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { rewriteQuery, searchOneDriveItems, groupItemsByFolder } from "@/lib/retrieval/retriever";
+import { searchPersonalOneDrive } from "@/lib/graph/personal-drive";
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
-import { ChatRequest, ChatResponse } from "@/lib/types";
+import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
 
 export async function POST(req: Request) {
   try {
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json()) as ChatRequest;
-    const { message, chat_history = [], session_id = "default" } = body;
+    const { message, chat_history = [], session_id = "default", scope = "all" } = body;
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return NextResponse.json(
@@ -23,34 +24,62 @@ export async function POST(req: Request) {
     }
 
     const trimmedMessage = message.trim();
+    const userEmail = session.user.email?.toLowerCase().trim();
 
     // 1. Rewrite multi-turn conversational query
     const rewrittenQuery = await rewriteQuery(trimmedMessage, chat_history);
 
-    // 2. Vector search & Parent-folder grouping
-    const retrievedRecords = await searchOneDriveItems(rewrittenQuery);
-    const folderCards = groupItemsByFolder(retrievedRecords);
+    // 2. Dual-mode Retrieval: Company Shared Drive + Personal OneDrive
+    let companyRecords: OneDriveRecord[] = [];
+    let personalRecords: OneDriveRecord[] = [];
+
+    // Search company shared drive if scope is "all" or "company"
+    if (scope === "all" || scope === "company") {
+      companyRecords = await searchOneDriveItems(rewrittenQuery);
+    }
+
+    // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
+    if ((scope === "all" || scope === "personal") && userEmail) {
+      personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
+    }
+
+    // Combine retrieved records (personal records first so user sees their own assets prominently)
+    const combinedRecords: OneDriveRecord[] = [...personalRecords, ...companyRecords];
+    const folderCards = groupItemsByFolder(combinedRecords);
 
     // 3. Generate answer with strict URL fidelity guardrail
     const answerMarkdown = await generateRagAnswer(
       rewrittenQuery,
-      retrievedRecords,
+      combinedRecords,
       folderCards
     );
 
     // 4. Save chat message to Supabase if available
     try {
       const supabase = createServerSupabaseClient();
-      if (session.user.id) {
+      let userId: string | null = null;
+      if (session.user.email) {
+        const { data: u } = await supabase
+          .from("users")
+          .select("id")
+          .eq("email", session.user.email.toLowerCase().trim())
+          .single();
+        if (u) userId = u.id;
+      }
+      if (!userId && session.user.id) {
+        userId = session.user.id;
+      }
+
+      if (userId) {
         await supabase.from("chat_messages").insert([
           {
-            user_id: session.user.id,
+            user_id: userId,
             session_id,
             role: "user",
             content: trimmedMessage,
           },
           {
-            user_id: session.user.id,
+            user_id: userId,
             session_id,
             role: "assistant",
             content: answerMarkdown,
@@ -58,8 +87,8 @@ export async function POST(req: Request) {
           },
         ]);
       }
-    } catch {
-      // Non-blocking history save
+    } catch (saveError) {
+      console.error("[Chat Save Error]:", saveError);
     }
 
     const response: ChatResponse = {

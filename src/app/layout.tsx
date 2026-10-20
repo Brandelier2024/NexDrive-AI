@@ -1,23 +1,31 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Montserrat, Open_Sans } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const montserrat = Montserrat({
+  variable: "--font-montserrat",
   subsets: ["latin"],
   display: "swap",
+  weight: ["300", "400", "500", "600", "700", "800"],
+});
+
+const openSans = Open_Sans({
+  variable: "--font-open-sans",
+  subsets: ["latin"],
+  display: "swap",
+  weight: ["300", "400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "OneDrive Media Locator — Find Company Files Instantly",
+  title: "DriveFinder AI — Enterprise Media Locator",
   description:
-    "AI-powered chatbot that helps employees find images, videos, and folders in OneDrive with direct clickable links.",
-  keywords: ["OneDrive", "media locator", "RAG chatbot", "file search", "SharePoint"],
+    "Intelligent semantic search across company OneDrive and SharePoint media, raw footage, video drafts, and project folders with verified direct links.",
+  keywords: ["DriveFinder", "OneDrive", "media locator", "RAG chatbot", "file search", "SharePoint"],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en" className={`${montserrat.variable} ${openSans.variable}`}>
       <body>{children}</body>
     </html>
   );

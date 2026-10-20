@@ -10,7 +10,7 @@ const ALLOWED_DOMAIN = process.env.NEXT_PUBLIC_ALLOWED_EMAIL_DOMAIN || "yourcomp
 function SignInContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  const callbackUrl = searchParams.get("callbackUrl") || "/chat";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -79,7 +79,7 @@ function SignInContent() {
               </svg>
             </div>
             <h1>Welcome back</h1>
-            <p>Sign in to access the OneDrive Media Locator</p>
+            <p>Sign in to access DriveFinder AI</p>
           </div>
 
           {/* Azure AD SSO */}
@@ -106,6 +106,25 @@ function SignInContent() {
           <div className="auth-divider">
             <span>or sign in with email</span>
           </div>
+
+          {/* Status Alerts */}
+          {searchParams.get("deleted") === "true" && (
+            <div className="auth-alert auth-alert-success" style={{ marginBottom: 16 }}>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Your account has been deleted successfully.
+            </div>
+          )}
+
+          {searchParams.get("registered") === "true" && (
+            <div className="auth-alert auth-alert-success" style={{ marginBottom: 16 }}>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Account verified! You can now sign in.
+            </div>
+          )}
 
           {/* Error Alert */}
           {error && (

@@ -54,6 +54,8 @@ export interface OneDriveRecord {
   last_modified: string | null;
   embedding?: number[] | null;
   similarity?: number;
+  is_personal?: boolean;
+  drive_scope?: "company" | "personal";
 }
 
 /** Structured file match inside a folder */
@@ -67,6 +69,7 @@ export interface MatchedFile {
   visual_summary?: string;
   visual_tags?: string;
   similarity?: number;
+  is_personal?: boolean;
 }
 
 /** Parent-first Folder Card presentation model */
@@ -78,6 +81,8 @@ export interface FolderCard {
   thumbnail_url?: string;
   highest_similarity?: number;
   matched_files: MatchedFile[];
+  is_personal?: boolean;
+  drive_scope?: "company" | "personal";
 }
 
 /** Chat API Request payload */
@@ -88,6 +93,7 @@ export interface ChatRequest {
     content: string;
   }>;
   session_id?: string;
+  scope?: "all" | "company" | "personal";
 }
 
 /** Chat API Response payload */

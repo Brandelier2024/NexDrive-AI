@@ -24,6 +24,21 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 -- ────────────────────────────────────────────────
+-- 1b. Email verification OTP codes (Sign-up authorization)
+-- ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  code TEXT NOT NULL,
+  attempts INT DEFAULT 0,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE IF EXISTS email_verifications ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email);
+
+-- ────────────────────────────────────────────────
 -- 2. OneDrive media metadata (Phase 2+)
 -- ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS onedrive_items (
@@ -126,4 +141,38 @@ AS $$
   ORDER BY onedrive_items.embedding <=> query_embedding
   LIMIT match_count;
 $$;
+
+-- ────────────────────────────────────────────────
+-- 6. Row Level Security (RLS) Policies
+-- ────────────────────────────────────────────────
+ALTER TABLE IF EXISTS onedrive_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS email_verifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS sync_state ENABLE ROW LEVEL SECURITY;
+
+-- onedrive_items: Read-only for clients, strictly no client delete/insert
+DROP POLICY IF EXISTS "Public and authenticated users can search onedrive items" ON onedrive_items;
+CREATE POLICY "Public and authenticated users can search onedrive items"
+  ON onedrive_items FOR SELECT TO anon, authenticated USING (true);
+
+-- chat_messages: Users can only read and delete their own messages
+DROP POLICY IF EXISTS "Users can only read their own chat history" ON chat_messages;
+CREATE POLICY "Users can only read their own chat history"
+  ON chat_messages FOR SELECT TO authenticated USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can only delete their own chat history" ON chat_messages;
+CREATE POLICY "Users can only delete their own chat history"
+  ON chat_messages FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- users: Users can only read their own profile row
+DROP POLICY IF EXISTS "Users can read own profile" ON users;
+CREATE POLICY "Users can read own profile"
+  ON users FOR SELECT TO authenticated USING (auth.uid() = id);
+
+-- sync_state: Read-only status display
+DROP POLICY IF EXISTS "Anyone can view sync status" ON sync_state;
+CREATE POLICY "Anyone can view sync status"
+  ON sync_state FOR SELECT TO anon, authenticated USING (true);
+
 

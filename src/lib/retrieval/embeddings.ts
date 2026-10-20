@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { config } from "@/lib/config";
 import { isGeminiConfigured } from "@/lib/crawler/vision-describer";
 import { OneDriveRecord } from "@/lib/types";
+import { getActiveGeminiKey } from "@/lib/llm/multi-provider";
 
 const EMBEDDING_DIMENSION = 768;
 
@@ -36,7 +37,8 @@ export function buildEmbeddingInputText(record: OneDriveRecord): string {
 export async function getEmbedding(text: string): Promise<number[]> {
   if (isGeminiConfigured()) {
     try {
-      const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
+      const apiKey = getActiveGeminiKey() || config.gemini.apiKey;
+      const ai = new GoogleGenAI({ apiKey });
       const modelName = config.gemini.embeddingModel.replace("models/", "") || "text-embedding-004";
 
       const response = await ai.models.embedContent({
