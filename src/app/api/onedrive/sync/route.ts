@@ -6,7 +6,7 @@ import { auth } from "@/lib/auth";
 
 let isSyncInProgress = false;
 
-export async function POST(req: Request) {
+export async function POST() {
   try {
     const session = await auth();
     // Allow sync if authenticated
@@ -28,10 +28,11 @@ export async function POST(req: Request) {
     } finally {
       isSyncInProgress = false;
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Sync API Error]:", error);
+    const message = error instanceof Error ? error.message : "Sync failed";
     return NextResponse.json(
-      { success: false, error: error?.message || "Sync failed" },
+      { success: false, error: message },
       { status: 500 }
     );
   }
@@ -87,9 +88,10 @@ export async function GET() {
       has_delta_link: hasDeltaLink,
       mode: azureConfigured ? "live" : "demo_mock",
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Status check failed";
     return NextResponse.json(
-      { status: "error", error: error?.message || "Status check failed" },
+      { status: "error", error: message },
       { status: 500 }
     );
   }

@@ -93,10 +93,11 @@ export async function POST(req: NextRequest) {
       success: true,
       message: `A 6-digit verification code was sent to ${normalizedEmail}.`,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Send OTP Error]:", error);
+    const message = error instanceof Error ? error.message : "Failed to send verification code.";
     return NextResponse.json(
-      { error: error?.message || "Failed to send verification code." },
+      { error: message },
       { status: 500 }
     );
   }

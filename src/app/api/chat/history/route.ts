@@ -81,7 +81,7 @@ export async function GET(req: Request) {
         lastMessage: string;
         lastTimestamp: string;
         messageCount: number;
-        messages: any[];
+        messages: Array<Record<string, unknown>>;
       }
     >();
 
@@ -112,7 +112,13 @@ export async function GET(req: Request) {
     // Sort sessions by most recent timestamp descending
     const sessionsList = Array.from(sessionsMap.values())
       .sort((a, b) => new Date(b.lastTimestamp).getTime() - new Date(a.lastTimestamp).getTime())
-      .map(({ messages, ...summary }) => summary);
+      .map((s) => ({
+        id: s.id,
+        title: s.title,
+        lastMessage: s.lastMessage,
+        lastTimestamp: s.lastTimestamp,
+        messageCount: s.messageCount,
+      }));
 
     // Active session is the most recent session
     const mostRecentSessionId = sessionsList[0]?.id || `session-${Date.now()}`;
@@ -123,10 +129,11 @@ export async function GET(req: Request) {
       activeSessionId: mostRecentSessionId,
       messages: activeMessages,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Chat History Error]:", error);
+    const message = error instanceof Error ? error.message : "Failed to load chat history";
     return NextResponse.json(
-      { error: error?.message || "Failed to load chat history" },
+      { error: message },
       { status: 500 }
     );
   }
@@ -179,10 +186,11 @@ export async function DELETE(req: Request) {
       success: true,
       message: sessionId ? `Session ${sessionId} deleted.` : "All chat history deleted.",
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Chat History Delete Error]:", error);
+    const message = error instanceof Error ? error.message : "Failed to delete chat history";
     return NextResponse.json(
-      { error: error?.message || "Failed to delete chat history" },
+      { error: message },
       { status: 500 }
     );
   }

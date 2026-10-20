@@ -259,8 +259,9 @@ export async function syncOneDrive(): Promise<SyncResult> {
       deleted_count: deletedCount,
       duration_ms: Date.now() - startTime,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Sync] Error during OneDrive sync:", error);
+    const message = error instanceof Error ? error.message : "Sync failed";
     return {
       success: false,
       mode: "live",
@@ -269,7 +270,7 @@ export async function syncOneDrive(): Promise<SyncResult> {
       media_indexed: 0,
       deleted_count: 0,
       duration_ms: Date.now() - startTime,
-      error: error?.message || "Sync failed",
+      error: message,
     };
   }
 }

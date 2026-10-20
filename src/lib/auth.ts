@@ -128,7 +128,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         session.user.id = token.id as string;
       }
       if (token.accessToken) {
-        (session as any).accessToken = token.accessToken;
+        Object.assign(session, { accessToken: token.accessToken });
       }
       return session;
     },

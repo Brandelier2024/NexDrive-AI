@@ -32,9 +32,10 @@ export async function GET() {
     }
 
     return NextResponse.json({ user: userRecord });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Failed to fetch profile.";
     return NextResponse.json(
-      { error: error?.message || "Failed to fetch profile." },
+      { error: message },
       { status: 500 }
     );
   }

@@ -74,10 +74,11 @@ export async function DELETE() {
       success: true,
       message: "Account and associated data deleted successfully.",
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Delete Account Error]:", error);
+    const message = error instanceof Error ? error.message : "Failed to delete account.";
     return NextResponse.json(
-      { error: error?.message || "Failed to delete account." },
+      { error: message },
       { status: 500 }
     );
   }

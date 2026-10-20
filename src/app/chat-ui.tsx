@@ -1,8 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { FolderCard, ChatResponse } from "@/lib/types";
+
+let globalIdCounter = 0;
+function generateUniqueId(prefix: string): string {
+  globalIdCounter++;
+  return `${prefix}-${globalIdCounter}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 interface Message {
   id: string;
@@ -95,27 +102,39 @@ export default function ChatUI({ user }: ChatUIProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  // Load sync status and chat history on mount
-  useEffect(() => {
-    fetchSyncStatus();
-    loadChatHistory();
-  }, []);
-
-  const loadChatHistory = async () => {
-    setIsHistoryLoading(true);
+  const fetchSyncStatus = async () => {
     try {
-      const res = await fetch("/api/chat/history");
+      const res = await fetch("/api/onedrive/sync");
       if (res.ok) {
         const data = await res.json();
-        if (data.sessions) {
-          setSessions(data.sessions);
-        }
-        if (data.activeSessionId) {
-          setActiveSessionId(data.activeSessionId);
-        }
+        setSyncStatus(data);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+
+  // Load sync status and chat history on mount
+  useEffect(() => {
+    let active = true;
+
+    fetch("/api/onedrive/sync")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data) setSyncStatus(data);
+      })
+      .catch(() => {});
+
+    fetch("/api/chat/history")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        if (data.sessions) setSessions(data.sessions);
+        if (data.activeSessionId) setActiveSessionId(data.activeSessionId);
         if (data.messages && data.messages.length > 0) {
-          const mapped: Message[] = data.messages.map((m: any) => ({
-            id: m.id || `msg-${Date.now()}-${m.role}`,
+          const mapped: Message[] = data.messages.map((m: { id?: string; role: "user" | "assistant"; content: string; folder_cards?: FolderCard[]; created_at?: string }) => ({
+            id: m.id || generateUniqueId(`msg-${m.role}`),
             role: m.role,
             content: m.content,
             folder_cards: m.folder_cards,
@@ -125,13 +144,16 @@ export default function ChatUI({ user }: ChatUIProps) {
           }));
           setMessages(mapped);
         }
-      }
-    } catch (err) {
-      console.error("[Chat History] Load error:", err);
-    } finally {
-      setIsHistoryLoading(false);
-    }
-  };
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setIsHistoryLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleSelectSession = async (sessionId: string) => {
     if (sessionId === activeSessionId) return;
@@ -142,8 +164,8 @@ export default function ChatUI({ user }: ChatUIProps) {
       if (res.ok) {
         const data = await res.json();
         if (data.messages) {
-          const mapped: Message[] = data.messages.map((m: any) => ({
-            id: m.id || `msg-${Date.now()}-${m.role}`,
+          const mapped: Message[] = data.messages.map((m: { id?: string; role: "user" | "assistant"; content: string; folder_cards?: FolderCard[]; created_at?: string }) => ({
+            id: m.id || generateUniqueId(`msg-${m.role}`),
             role: m.role,
             content: m.content,
             folder_cards: m.folder_cards,
@@ -162,7 +184,7 @@ export default function ChatUI({ user }: ChatUIProps) {
   };
 
   const handleNewChat = () => {
-    const newSessionId = `session-${Date.now()}`;
+    const newSessionId = generateUniqueId("session");
     setActiveSessionId(newSessionId);
     setMessages([]);
     setInput("");
@@ -201,18 +223,6 @@ export default function ChatUI({ user }: ChatUIProps) {
     }
   };
 
-  const fetchSyncStatus = async () => {
-    try {
-      const res = await fetch("/api/onedrive/sync");
-      if (res.ok) {
-        const data = await res.json();
-        setSyncStatus(data);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
   const handleOpenProfile = async () => {
     setIsProfileOpen(true);
     setShowDeleteConfirm(false);
@@ -245,8 +255,9 @@ export default function ChatUI({ user }: ChatUIProps) {
       }
       // Successfully deleted in Supabase -> terminate NextAuth session and redirect
       await signOut({ callbackUrl: "/auth/signin?deleted=true" });
-    } catch (err: any) {
-      setDeleteError(err?.message || "An unexpected error occurred while deleting your account.");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "An unexpected error occurred while deleting your account.";
+      setDeleteError(message);
       setIsDeletingAccount(false);
     }
   };
@@ -292,7 +303,7 @@ export default function ChatUI({ user }: ChatUIProps) {
     }
 
     const userMessage: Message = {
-      id: `msg-${Date.now()}-user`,
+      id: generateUniqueId("msg-user"),
       role: "user",
       content: queryText,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -325,7 +336,7 @@ export default function ChatUI({ user }: ChatUIProps) {
       const data = (await res.json()) as ChatResponse;
 
       const assistantMessage: Message = {
-        id: `msg-${Date.now()}-assistant`,
+        id: generateUniqueId("msg-assistant"),
         role: "assistant",
         content: data.answer_markdown,
         folder_cards: data.folder_cards,
@@ -360,9 +371,9 @@ export default function ChatUI({ user }: ChatUIProps) {
           ];
         }
       });
-    } catch (err: any) {
+    } catch {
       const errorMessage: Message = {
-        id: `msg-${Date.now()}-err`,
+        id: generateUniqueId("msg-err"),
         role: "assistant",
         content:
           "⚠️ I encountered an error connecting to the search service. Please check server logs or try clicking **Sync OneDrive** in the top right.",
@@ -482,7 +493,7 @@ export default function ChatUI({ user }: ChatUIProps) {
           </div>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <a
+              <Link
                 href="/"
                 style={{
                   textDecoration: "none",
@@ -493,7 +504,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                 }}
               >
                 DriveFinder AI
-              </a>
+              </Link>
               <span
                 style={{
                   fontSize: "0.72rem",

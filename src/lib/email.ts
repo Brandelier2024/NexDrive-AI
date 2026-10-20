@@ -67,12 +67,13 @@ export async function storeOtp(email: string, code: string): Promise<void> {
       console.error("[OTP Store] Failed to persist OTP to Supabase email_verifications:", error.message || error);
       throw new Error(`Failed to securely save verification code: ${error.message || "Database persistence error"}`);
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const errorObj = err instanceof Error ? err : new Error(String(err));
     // If Supabase is unavailable (e.g. unconfigured in local dev), log and use in-memory fallback
-    if (err?.message?.includes("Failed to securely save verification code")) {
-      throw err;
+    if (errorObj.message.includes("Failed to securely save verification code")) {
+      throw errorObj;
     }
-    console.warn("[OTP Store] Supabase unavailable, utilizing in-memory OTP fallback:", err?.message || err);
+    console.warn("[OTP Store] Supabase unavailable, utilizing in-memory OTP fallback:", errorObj.message);
   }
 }
 
@@ -217,9 +218,10 @@ export async function sendVerificationEmail(
 
       console.log(`[Email] Resend successfully delivered verification code to ${toEmail}`);
       return { success: true };
-    } catch (err: any) {
-      console.error("[Email] Resend exception:", err?.message || err);
-      return { success: false, error: err?.message || "Failed to send email via Resend." };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to send email via Resend.";
+      console.error("[Email] Resend exception:", message);
+      return { success: false, error: message };
     }
   }
 
@@ -258,9 +260,10 @@ export async function sendVerificationEmail(
 
       console.log(`[Email] SMTP successfully sent verification code to ${toEmail}`);
       return { success: true };
-    } catch (err: any) {
-      console.error("[Email] SMTP exception:", err?.message || err);
-      return { success: false, error: err?.message || "Failed to send email via SMTP." };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to send email via SMTP.";
+      console.error("[Email] SMTP exception:", message);
+      return { success: false, error: message };
     }
   }
 

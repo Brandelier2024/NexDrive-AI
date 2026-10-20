@@ -2,13 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { config } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { FolderCard, MatchedFile, OneDriveRecord } from "@/lib/types";
-import {
-  cosineSimilarity,
-  getEmbedding,
-  generateDeterministicVector,
-} from "./embeddings";
 import { isGeminiConfigured } from "@/lib/crawler/vision-describer";
-import { getAllIndexedRecords } from "@/lib/crawler/indexer";
 import { getActiveGeminiKey } from "@/lib/llm/multi-provider";
 
 const PRONOUN_REGEX = /\b(that|those|it|them|this|the folder|the files|the video|the photo|the previous|inside|more|other)\b/i;

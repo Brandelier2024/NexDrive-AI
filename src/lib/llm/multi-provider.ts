@@ -113,9 +113,10 @@ async function callGemini(
     });
 
     return response.text || "";
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const error = err as { status?: number; message?: string };
     // If model not found, fallback to gemini-1.5-flash
-    if (err?.status === 404 || err?.message?.includes("not found")) {
+    if (error?.status === 404 || error?.message?.includes("not found")) {
       const response = await ai.models.generateContent({
         model: "gemini-1.5-flash",
         contents: [
@@ -162,8 +163,8 @@ async function callGroq(
 
   if (!res.ok) {
     const errorBody = await res.text().catch(() => "");
-    const error = new Error(`Groq API returned ${res.status}: ${errorBody}`);
-    (error as any).status = res.status;
+    const error = new Error(`Groq API returned ${res.status}: ${errorBody}`) as Error & { status?: number };
+    error.status = res.status;
     throw error;
   }
 
@@ -219,12 +220,13 @@ export async function executeWithMultiProviderFallback(
           modelUsed: "gemini-2.5-flash",
         };
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err as { status?: number; message?: string };
       const isQuota =
-        err?.status === 429 ||
-        err?.message?.includes("429") ||
-        err?.message?.includes("quota") ||
-        err?.message?.includes("Resource has been exhausted");
+        error?.status === 429 ||
+        error?.message?.includes("429") ||
+        error?.message?.includes("quota") ||
+        error?.message?.includes("Resource has been exhausted");
 
       setKeyCooldown(key, isQuota);
       console.warn(`[LLM Router] Gemini attempt ${attempt + 1} failed. Rotating to next key...`);
@@ -260,8 +262,9 @@ export async function executeWithMultiProviderFallback(
             modelUsed: "llama-3.3-70b-versatile",
           };
         }
-      } catch (err: any) {
-        const isQuota = err?.status === 429 || err?.message?.includes("429");
+      } catch (err: unknown) {
+        const error = err as { status?: number; message?: string };
+        const isQuota = error?.status === 429 || error?.message?.includes("429");
         setKeyCooldown(key, isQuota);
         console.warn(`[LLM Router] Groq attempt ${attempt + 1} failed. Rotating to next Groq key...`);
       }

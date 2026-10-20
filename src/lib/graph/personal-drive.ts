@@ -59,39 +59,95 @@ function cleanParentPath(rawPath?: string): string {
 }
 
 /**
+ * Derives parent folder webUrl dynamically without hardcoding tenant URLs
+ */
+function getFolderWebUrl(
+  item: GraphDriveItem,
+  isFolder: boolean,
+  folderPath: string,
+  normalizedEmail: string
+): string {
+  if (isFolder) {
+    return item.webUrl;
+  }
+
+  // Derive parent folder directly from the file's verified webUrl
+  if (item.webUrl && item.webUrl.includes("/")) {
+    const parentUrl = item.webUrl.substring(0, item.webUrl.lastIndexOf("/"));
+    if (parentUrl.startsWith("http")) {
+      return parentUrl;
+    }
+  }
+
+  // Fallback: use environment variable or tenant base
+  const tenantBase = process.env.SHAREPOINT_BASE_URL || "https://brandeliermediaworksllp-my.sharepoint.com";
+  const userSegment = normalizedEmail.replace(/[@.]/g, "_");
+  const subpath = folderPath && folderPath !== "My OneDrive" ? `/${encodeURIComponent(folderPath)}` : "";
+  return `${tenantBase}/personal/${userSegment}/Documents${subpath}`;
+}
+
+/**
  * Fetches all items from the employee's personal OneDrive via Microsoft Graph /delta
- * using the application service token.
+ * with automatic pagination, request timeout, and cache eviction.
  */
 async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]> {
   const normalizedEmail = userEmail.toLowerCase().trim();
   const cached = userDriveCache.get(normalizedEmail);
   const now = Date.now();
 
+  // Prune expired cache entries to prevent memory growth
+  if (userDriveCache.size > 50) {
+    for (const [key, entry] of userDriveCache.entries()) {
+      if (now - entry.timestamp > CACHE_TTL_MS) {
+        userDriveCache.delete(key);
+      }
+    }
+  }
+
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     return cached.items;
   }
 
   const token = await getGraphAccessToken();
-  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
+  let nextUrl: string | undefined = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
+  const allItems: GraphDriveItem[] = [];
+  let pageCount = 0;
+  const maxPages = 5; // Cap to 5 pages (~1,000 items) for latency safety
 
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
-  });
+  while (nextUrl && pageCount < maxPages) {
+    pageCount++;
+    try {
+      const res = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(8000),
+      });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.warn(`[Personal OneDrive] Graph API delta for ${normalizedEmail} returned ${res.status}:`, errText);
-    return [];
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.warn(`[Personal OneDrive] Graph API delta for ${normalizedEmail} returned ${res.status}:`, errText);
+        break;
+      }
+
+      const data = (await res.json()) as {
+        value?: GraphDriveItem[];
+        "@odata.nextLink"?: string;
+      };
+
+      const pageItems = (data.value || []).filter((item) => item.name && item.name !== "root");
+      allItems.push(...pageItems);
+
+      nextUrl = data["@odata.nextLink"];
+    } catch (fetchErr) {
+      console.warn(`[Personal OneDrive] Error fetching delta page ${pageCount}:`, fetchErr);
+      break;
+    }
   }
 
-  const data = (await res.json()) as { value?: GraphDriveItem[] };
-  const items = (data.value || []).filter((item) => item.name && item.name !== "root");
-
-  userDriveCache.set(normalizedEmail, { items, timestamp: now });
-  return items;
+  userDriveCache.set(normalizedEmail, { items: allItems, timestamp: now });
+  return allItems;
 }
 
 /**
@@ -123,8 +179,8 @@ export async function searchPersonalOneDrive(
     // Return recent items sorted by last modified date descending
     filteredItems = [...items]
       .sort((a, b) => {
-        const timeA = new Date(a.lastModifiedDateTime || 0).getTime();
-        const timeB = new Date(b.lastModifiedDateTime || 0).getTime();
+        const timeA = a.lastModifiedDateTime ? Date.parse(a.lastModifiedDateTime) : 0;
+        const timeB = b.lastModifiedDateTime ? Date.parse(b.lastModifiedDateTime) : 0;
         return timeB - timeA;
       })
       .slice(0, 15);
@@ -159,9 +215,7 @@ export async function searchPersonalOneDrive(
     const isFolder = recordType === "folder";
     const folderPath = cleanParentPath(item.parentReference?.path);
     const folderName = isFolder ? item.name : folderPath.split("/").pop() || "Personal OneDrive";
-    const folderWebUrl = isFolder
-      ? item.webUrl
-      : `https://brandeliermediaworksllp-my.sharepoint.com/personal/${normalizedEmail.replace(/[@.]/g, "_")}/Documents/${encodeURIComponent(folderPath !== "My OneDrive" ? folderPath : "")}`;
+    const folderWebUrl = getFolderWebUrl(item, isFolder, folderPath, normalizedEmail);
 
     records.push({
       item_id: `personal-${item.id}`,

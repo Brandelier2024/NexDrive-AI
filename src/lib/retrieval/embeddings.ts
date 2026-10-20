@@ -47,7 +47,8 @@ export async function getEmbedding(text: string): Promise<number[]> {
       });
 
       const embValues =
-        response.embeddings?.[0]?.values || (response as any).embedding?.values;
+        response.embeddings?.[0]?.values ||
+        (response as { embedding?: { values?: number[] } }).embedding?.values;
 
       if (embValues && embValues.length > 0) {
         // Ensure standard 768 dimensions
