@@ -1,7 +1,30 @@
 import ExcelJS from "exceljs";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
+
+function generateMasterEditId(
+  sheetName,
+  client,
+  heading,
+  rawUrl,
+  finalUrl,
+  occurrenceIndex = 0
+) {
+  const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+  const rawKey = [
+    sheetName.trim().toLowerCase(),
+    (client || "").trim().toLowerCase(),
+    (heading || "").trim().toLowerCase(),
+    (rawUrl || "").trim().toLowerCase(),
+    (finalUrl || "").trim().toLowerCase(),
+  ].join("|");
+
+  const hash = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 16);
+  const suffix = occurrenceIndex > 0 ? `_${occurrenceIndex}` : "";
+  return `master_edit_${safeSheetKey}_${hash}${suffix}`;
+}
 
 // 1. Load environment variables from .env.local
 const envPath = path.resolve(process.cwd(), ".env.local");
@@ -205,6 +228,7 @@ async function runMasterEditsPipeline() {
   ];
 
   const dbRecords = [];
+  const seenIdCounts = new Map();
   const editorsSet = new Set();
   const clientsSet = new Set();
   let totalWithRawLink = 0;
@@ -330,10 +354,27 @@ async function runMasterEditsPipeline() {
       if (rawData.url) totalWithRawLink++;
       if (finalData.url) totalWithFinalLink++;
 
+      const keyForCount = [
+        sheetName.trim().toLowerCase(),
+        (client || "").trim().toLowerCase(),
+        (heading || "").trim().toLowerCase(),
+        (rawData.url || "").trim().toLowerCase(),
+        (finalData.url || "").trim().toLowerCase(),
+      ].join("|");
+      const occurrenceIndex = seenIdCounts.get(keyForCount) || 0;
+      seenIdCounts.set(keyForCount, occurrenceIndex + 1);
+
       const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-      const parentFolderId = `master_edit_${safeSheetKey}_${r}`;
+      const parentFolderId = generateMasterEditId(
+        sheetName,
+        client,
+        heading,
+        rawData.url,
+        finalData.url,
+        occurrenceIndex
+      );
       const folderWebUrl = rawData.url || finalData.url || MASTER_SHEET_FALLBACK_URL;
-      const folderPath = `Master Edits / ${sheetName} / ${client || "General"} / ${heading || `Row ${r}`}`;
+      const folderPath = `Master Edits / ${sheetName} / ${client || "General"} / ${heading || (occurrenceIndex > 0 ? `Item ${occurrenceIndex + 1}` : "Project")}`;
 
       const summaryParts = [
         `[Master Edit Sheet: ${sheetName}]`,
@@ -373,7 +414,7 @@ async function runMasterEditsPipeline() {
       dbRecords.push({
         item_id: parentFolderId,
         record_type: "folder",
-        name: `[${sheetName}] ${client || "Project"} - ${heading || `Row ${r}`}${assignedTo ? ` (${assignedTo})` : ""}`,
+        name: `[${sheetName}] ${client || "Project"} - ${heading || (occurrenceIndex > 0 ? `Item ${occurrenceIndex + 1}` : "Project")}${assignedTo ? ` (${assignedTo})` : ""}`,
         file_web_url: null,
         parent_folder_id: `master_edits_${safeSheetKey}`,
         parent_folder_name: `Master Edits - ${sheetName}`,
@@ -446,6 +487,59 @@ async function runMasterEditsPipeline() {
       const pct = Math.round((saved / dbRecords.length) * 100);
       console.log(`   Saved ${saved} / ${dbRecords.length} items (${pct}%)...`);
     }
+  }
+
+  // 5. Cleanup stale onedrive_items records matching master_edit_% not in current run
+  console.log("\n🧹 Checking for stale/orphaned master edit records in Supabase...");
+  const currentItemIds = new Set(dbRecords.map((r) => r.item_id));
+  let staleRecordsRemoved = 0;
+
+  try {
+    const existingIds = [];
+    let page = 0;
+    const PAGE_SIZE = 1000;
+
+    while (true) {
+      const { data, error: fetchErr } = await supabase
+        .from("onedrive_items")
+        .select("item_id")
+        .like("item_id", "master_edit_%")
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+
+      if (fetchErr || !data || data.length === 0) break;
+      for (const row of data) {
+        existingIds.push(row.item_id);
+      }
+      if (data.length < PAGE_SIZE) break;
+      page++;
+    }
+
+    if (existingIds.length > 0) {
+      const idsToDelete = existingIds.filter((id) => !currentItemIds.has(id));
+
+      if (idsToDelete.length > 0) {
+        console.log(`   Found ${idsToDelete.length} stale records to remove. Deleting in chunks of 200...`);
+        const DELETE_CHUNK = 200;
+        for (let i = 0; i < idsToDelete.length; i += DELETE_CHUNK) {
+          const chunk = idsToDelete.slice(i, i + DELETE_CHUNK);
+          const { error: delErr } = await supabase
+            .from("onedrive_items")
+            .delete()
+            .in("item_id", chunk);
+
+          if (!delErr) {
+            staleRecordsRemoved += chunk.length;
+          } else {
+            console.warn(`   ❌ Delete batch error:`, delErr.message);
+          }
+        }
+        console.log(`   ✅ Removed ${staleRecordsRemoved} stale master edit records.`);
+      } else {
+        console.log("   ✅ No stale records found.");
+      }
+    }
+  } catch (cleanErr) {
+    console.warn("   ⚠️ Stale cleanup warning:", cleanErr.message);
   }
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);

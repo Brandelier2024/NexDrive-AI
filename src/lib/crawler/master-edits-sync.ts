@@ -1,6 +1,29 @@
 import ExcelJS from "exceljs";
+import crypto from "crypto";
 import { config } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
+
+function generateMasterEditId(
+  sheetName: string,
+  client: string,
+  heading: string,
+  rawUrl: string,
+  finalUrl: string,
+  occurrenceIndex = 0
+): string {
+  const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+  const rawKey = [
+    sheetName.trim().toLowerCase(),
+    (client || "").trim().toLowerCase(),
+    (heading || "").trim().toLowerCase(),
+    (rawUrl || "").trim().toLowerCase(),
+    (finalUrl || "").trim().toLowerCase(),
+  ].join("|");
+
+  const hash = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 16);
+  const suffix = occurrenceIndex > 0 ? `_${occurrenceIndex}` : "";
+  return `master_edit_${safeSheetKey}_${hash}${suffix}`;
+}
 
 const DRIVE_ID = "b!4UkkSUBb7EONrBN-9t-yC8G83OVLLPVNki85r7d7cjAJTTBA0NswRoLhu1Ogh6mk";
 const ITEM_ID = "01WWQKDCQM3M6Q7CFNNJH2HDSBDPJCWXQJ";
@@ -112,6 +135,7 @@ export interface MasterEditsSyncResult {
   totalFinalVideos: number;
   rawLinksFound: number;
   finalLinksFound: number;
+  staleRecordsRemoved?: number;
   sheetsProcessed: string[];
   durationMs: number;
   error?: string;
@@ -182,6 +206,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
   }
 
   const dbRecords: ItemRecord[] = [];
+  const seenIdCounts = new Map<string, number>();
   let rawLinksFound = 0;
   let finalLinksFound = 0;
 
@@ -302,10 +327,27 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
       if (rawData.url) rawLinksFound++;
       if (finalData.url) finalLinksFound++;
 
+      const keyForCount = [
+        sheetName.trim().toLowerCase(),
+        (client || "").trim().toLowerCase(),
+        (heading || "").trim().toLowerCase(),
+        (rawData.url || "").trim().toLowerCase(),
+        (finalData.url || "").trim().toLowerCase(),
+      ].join("|");
+      const occurrenceIndex = seenIdCounts.get(keyForCount) || 0;
+      seenIdCounts.set(keyForCount, occurrenceIndex + 1);
+
       const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-      const parentFolderId = `master_edit_${safeSheetKey}_${r}`;
+      const parentFolderId = generateMasterEditId(
+        sheetName,
+        client,
+        heading,
+        rawData.url,
+        finalData.url,
+        occurrenceIndex
+      );
       const folderWebUrl = rawData.url || finalData.url || MASTER_SHEET_FALLBACK_URL;
-      const folderPath = `Master Edits / ${sheetName} / ${client || "General"} / ${heading || `Row ${r}`}`;
+      const folderPath = `Master Edits / ${sheetName} / ${client || "General"} / ${heading || (occurrenceIndex > 0 ? `Item ${occurrenceIndex + 1}` : "Project")}`;
 
       const summaryParts = [
         `[Master Edit Sheet: ${sheetName}]`,
@@ -345,7 +387,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
       dbRecords.push({
         item_id: parentFolderId,
         record_type: "folder",
-        name: `[${sheetName}] ${client || "Project"} - ${heading || `Row ${r}`}${assignedTo ? ` (${assignedTo})` : ""}`,
+        name: `[${sheetName}] ${client || "Project"} - ${heading || (occurrenceIndex > 0 ? `Item ${occurrenceIndex + 1}` : "Project")}${assignedTo ? ` (${assignedTo})` : ""}`,
         file_web_url: null,
         parent_folder_id: `master_edits_${safeSheetKey}`,
         parent_folder_name: `Master Edits - ${sheetName}`,
@@ -406,6 +448,54 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
     }
   }
 
+  // 5. Cleanup stale onedrive_items records matching master_edit_% not in current run
+  const currentItemIds = new Set(dbRecords.map((r) => r.item_id));
+  let staleRecordsRemoved = 0;
+
+  try {
+    const existingIds: string[] = [];
+    let page = 0;
+    const PAGE_SIZE = 1000;
+
+    while (true) {
+      const { data, error: fetchErr } = await supabase
+        .from("onedrive_items")
+        .select("item_id")
+        .like("item_id", "master_edit_%")
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+
+      if (fetchErr || !data || data.length === 0) break;
+      for (const row of data) {
+        existingIds.push(row.item_id);
+      }
+      if (data.length < PAGE_SIZE) break;
+      page++;
+    }
+
+    if (existingIds.length > 0) {
+      const idsToDelete = existingIds.filter((id) => !currentItemIds.has(id));
+
+      if (idsToDelete.length > 0) {
+        const DELETE_CHUNK = 200;
+        for (let i = 0; i < idsToDelete.length; i += DELETE_CHUNK) {
+          const chunk = idsToDelete.slice(i, i + DELETE_CHUNK);
+          const { error: delErr } = await supabase
+            .from("onedrive_items")
+            .delete()
+            .in("item_id", chunk);
+
+          if (!delErr) {
+            staleRecordsRemoved += chunk.length;
+          } else {
+            console.warn("[MasterEditsSync] Delete batch error:", delErr.message);
+          }
+        }
+      }
+    }
+  } catch (cleanErr) {
+    console.warn("[MasterEditsSync] Stale records cleanup error:", cleanErr);
+  }
+
   return {
     success: true,
     totalSynced: saved,
@@ -413,6 +503,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
     totalFinalVideos: dbRecords.filter((r) => r.record_type === "video").length,
     rawLinksFound,
     finalLinksFound,
+    staleRecordsRemoved,
     sheetsProcessed,
     durationMs: Date.now() - startTime,
   };
