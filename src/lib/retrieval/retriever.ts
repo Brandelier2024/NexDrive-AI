@@ -74,7 +74,8 @@ export const STOP_WORDS = new Set([
   "store", "stored", "storing",
   "put", "bring", "fetch", "fetching",
   "file", "files", "fiel", "fiels", "flie", "flies", "filename", "filenames",
-  "folder", "folders", "foler", "folers", "floder", "floders", "directory", "directories"
+  "folder", "folders", "foler", "folers", "floder", "floders", "directory", "directories",
+  "link", "links", "sheet", "sheets", "excel", "master"
 ]);
 
 export const MONTH_MAP: Record<string, number> = {
@@ -253,10 +254,10 @@ export async function searchOneDriveItems(
           .select("*")
           .eq("record_type", "folder")
           .neq("name", "root")
-          .or(`name.ilike.%${temporal.monthName}%,folder_path.ilike.%${temporal.monthName}%,name.ilike.%${temporal.monthShort}%,folder_path.ilike.%${temporal.monthShort}%`);
+          .or(`name.ilike.%${temporal.monthName}%,folder_path.ilike.%${temporal.monthName}%,visual_summary.ilike.%${temporal.monthName}%,name.ilike.%${temporal.monthShort}%,folder_path.ilike.%${temporal.monthShort}%,visual_summary.ilike.%${temporal.monthShort}%`);
 
         for (const kw of temporal.remainingKeywords) {
-          folderQuery = folderQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%`);
+          folderQuery = folderQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%,visual_summary.ilike.%${kw}%,visual_tags.ilike.%${kw}%`);
         }
 
         const { data: matchedFolders } = await folderQuery.limit(5);
@@ -291,7 +292,7 @@ export async function searchOneDriveItems(
           }
 
           for (const kw of temporal.remainingKeywords) {
-            dateQuery = dateQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%`);
+            dateQuery = dateQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%,visual_summary.ilike.%${kw}%,visual_tags.ilike.%${kw}%`);
           }
 
           const { data: dateMatches } = await dateQuery
@@ -319,7 +320,7 @@ export async function searchOneDriveItems(
         }
 
         for (const kw of temporal.remainingKeywords) {
-          recentQuery = recentQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%`);
+          recentQuery = recentQuery.or(`name.ilike.%${kw}%,folder_path.ilike.%${kw}%,visual_summary.ilike.%${kw}%,visual_tags.ilike.%${kw}%`);
         }
 
         const { data: recentItems } = await recentQuery
@@ -395,7 +396,7 @@ export async function searchOneDriveItems(
         .from("onedrive_items")
         .select("*")
         .neq("name", "root")
-        .or(`name.ilike.%${phrase}%,folder_path.ilike.%${phrase}%`)
+        .or(`name.ilike.%${phrase}%,folder_path.ilike.%${phrase}%,visual_summary.ilike.%${phrase}%,visual_tags.ilike.%${phrase}%`)
         .limit(topK);
 
       if (phraseMatches && phraseMatches.length > 0) {
@@ -417,7 +418,7 @@ export async function searchOneDriveItems(
 
       for (const kw of keywords) {
         const variants = getSpellingVariants(kw);
-        const orForKw = variants.map((v) => `name.ilike.%${v}%,folder_path.ilike.%${v}%`).join(",");
+        const orForKw = variants.map((v) => `name.ilike.%${v}%,folder_path.ilike.%${v}%,visual_summary.ilike.%${v}%,visual_tags.ilike.%${v}%`).join(",");
         queryBuilder = queryBuilder.or(orForKw);
       }
 
@@ -436,7 +437,7 @@ export async function searchOneDriveItems(
     if (keywords.length === 1 && matchedRecords.length === 0) {
       const variants = getSpellingVariants(keywords[0]);
       const orFilter = variants
-        .map((t) => `name.ilike.%${t}%,folder_path.ilike.%${t}%`)
+        .map((t) => `name.ilike.%${t}%,folder_path.ilike.%${t}%,visual_summary.ilike.%${t}%,visual_tags.ilike.%${t}%`)
         .join(",");
 
       const { data: termMatches } = await supabase

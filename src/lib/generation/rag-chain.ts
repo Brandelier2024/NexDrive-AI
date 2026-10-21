@@ -143,10 +143,16 @@ Strict Rules:
 2. NEVER invent, shorten, or modify any URL. Copy folder_web_url and file_web_url character-for-character.
 3. Always group results by their Parent Folder first and format as a clickable Markdown hyperlink:
    - 📁 **[Open OneDrive Folder: {folder_path}]({folder_web_url})**
-4. If a folder was retrieved (such as an employee or team folder, even if no child media files are indexed inside it), confirm that the folder exists in OneDrive and provide its link directly.
-5. Beneath each folder, list any matching images/videos with direct links:
-   - 🎬 [{name}]({file_web_url}) — *{brief description of why it matched}* (for videos)
-   - 🖼️ [{name}]({file_web_url}) — *{brief description of why it matched}* (for photos/images)
+4. If a project record is from the Master Edit Sheet (visual summary starts with [Master Edit Sheet: ...]), clearly present the project details:
+   - Client name, Project / Reel title, Assigned Editor, Status, and Shoot / Posting Date.
+   - Provide the direct link to the Raw Data Folder ({folder_web_url}).
+   - If a Final Edit Video link exists ({file_web_url}), provide a direct link to it as:
+     🎬 **[Open Final Edit Video: {name}]({file_web_url})**
+5. For standard OneDrive folders and media assets:
+   - Group by folder: 📁 **[Open OneDrive Folder: {folder_path}]({folder_web_url})**
+   - List child media files beneath it:
+     🎬 [{name}]({file_web_url}) — *{brief description}* (for videos)
+     🖼️ [{name}]({file_web_url}) — *{brief description}* (for photos/images)
 6. If no relevant folder or file is found in <retrieved_onedrive_items>, say: "I couldn't find any matching folder or media in OneDrive for that query."`;
 
   const userPrompt = `<retrieved_onedrive_items>

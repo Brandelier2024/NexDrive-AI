@@ -40,26 +40,38 @@ interface ChatUIProps {
   };
 }
 
-const SUGGESTED_QUERIES = [
+interface SearchTopicItem {
+  title: string;
+  desc: string;
+  query: string;
+  badge?: string;
+  count?: number;
+}
+
+const DEFAULT_TOPICS: SearchTopicItem[] = [
   {
-    title: "Diwali Campaign Videos",
-    desc: "Find final promotional reels and festive videos",
-    query: "Find the final Diwali promotional videos and reels",
+    title: "Recent Documents & Presentations",
+    desc: "Find presentations, slide decks, and documents",
+    query: "Show me recent presentations, slide decks, and documents",
+    badge: "Suggested",
   },
   {
-    title: "Company Brand Logos",
-    desc: "Locate primary logos and vector master files",
+    title: "Photos & Creative Media",
+    desc: "Browse images, banners, and visual assets",
+    query: "Find photos, campaign images, and creative visual assets",
+    badge: "Suggested",
+  },
+  {
+    title: "Official Brand Logos & Assets",
+    desc: "Locate primary logos and master vector files",
     query: "Where are the official brand logos and master vector files?",
+    badge: "Suggested",
   },
   {
-    title: "Product Launch Reels",
-    desc: "Vertical 9:16 videos and drone footage",
-    query: "Show me vertical videos and reels for product launches",
-  },
-  {
-    title: "Team & Event Photos",
-    desc: "Office photoshoot and Annual Gala photos",
-    query: "Where are the Annual Gala and office team photos?",
+    title: "Shared Company Folders",
+    desc: "Explore top-level shared team directories",
+    query: "Show me the shared company folders in OneDrive",
+    badge: "Suggested",
   },
 ];
 
@@ -67,6 +79,7 @@ export default function ChatUI({ user }: ChatUIProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [frequentTopics, setFrequentTopics] = useState<SearchTopicItem[]>([]);
   const [syncStatus, setSyncStatus] = useState<{
     total_items: number;
     mode: string;
@@ -162,6 +175,9 @@ export default function ChatUI({ user }: ChatUIProps) {
         if (!active || !data || userNavigatedRef.current) return;
         if (data.sessions) setSessions(data.sessions);
         if (data.activeSessionId) setActiveSessionId(data.activeSessionId);
+        if (data.frequentTopics && Array.isArray(data.frequentTopics) && data.frequentTopics.length > 0) {
+          setFrequentTopics(data.frequentTopics);
+        }
         if (data.messages && data.messages.length > 0) {
           const mapped: Message[] = data.messages.map((m: { id?: string; role: "user" | "assistant"; content: string; folder_cards?: FolderCard[]; created_at?: string }) => ({
             id: m.id || generateUniqueId(`msg-${m.role}`),
@@ -1395,14 +1411,24 @@ export default function ChatUI({ user }: ChatUIProps) {
                   <h2
                     className="chat-welcome-title"
                     style={{
-                      fontSize: "1.6rem",
+                      fontSize: "1.75rem",
                       fontWeight: 700,
                       color: "var(--color-text-primary)",
                       letterSpacing: "-0.03em",
                       marginBottom: 8,
                     }}
                   >
-                    Find Company Files & Folders Instantly
+                    {(() => {
+                      const hour = new Date().getHours();
+                      const firstName = user?.name ? user.name.split(" ")[0] : (user?.email ? user.email.split("@")[0] : "");
+                      let salutation = "Good morning";
+                      if (hour >= 12 && hour < 17) {
+                        salutation = "Good afternoon";
+                      } else if (hour >= 17) {
+                        salutation = "Good evening";
+                      }
+                      return firstName ? `${salutation}, ${firstName}` : salutation;
+                    })()} 👋
                   </h2>
                   <p
                     className="chat-welcome-desc"
@@ -1411,14 +1437,53 @@ export default function ChatUI({ user }: ChatUIProps) {
                       color: "var(--color-text-secondary)",
                       maxWidth: 540,
                       lineHeight: 1.5,
-                      marginBottom: 32,
+                      marginBottom: 24,
                     }}
                   >
-                    Ask naturally for any video, photoshoot, brand logo, or campaign folder.
-                    Get verified, clickable OneDrive hyperlinks straight to the source.
+                    Find any file, folder, presentation, or media across your OneDrive.
                   </p>
 
-                  {/* Suggestion Cards */}
+                  {/* Section Label */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginBottom: 12,
+                      width: "100%",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "0.78rem",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        color: "var(--color-text-tertiary)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      {frequentTopics.length > 0 ? (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                          </svg>
+                          Your Frequent Searches & Topics
+                        </>
+                      ) : (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+                          </svg>
+                          Suggested Topics
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  {/* Frequent & Personalized Topics Grid */}
                   <div
                     className="chat-suggestions-grid"
                     style={{
@@ -1428,7 +1493,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                       width: "100%",
                     }}
                   >
-                    {SUGGESTED_QUERIES.map((item, idx) => (
+                    {(frequentTopics.length > 0 ? frequentTopics : DEFAULT_TOPICS).map((item, idx) => (
                       <button
                         key={idx}
                         onClick={() => handleSendMessage(item.query)}
@@ -1444,6 +1509,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                           cursor: "pointer",
                           transition: "all var(--transition-fast)",
                           boxShadow: "var(--shadow-sm)",
+                          position: "relative",
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.borderColor = "var(--color-brand-400)";
@@ -1456,16 +1522,38 @@ export default function ChatUI({ user }: ChatUIProps) {
                           e.currentTarget.style.boxShadow = "var(--shadow-sm)";
                         }}
                       >
-                        <span
-                          style={{
-                            fontSize: "0.88rem",
-                            fontWeight: 600,
-                            color: "var(--color-text-primary)",
-                            marginBottom: 4,
-                          }}
-                        >
-                          {item.title}
-                        </span>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", marginBottom: 6 }}>
+                          <span
+                            style={{
+                              fontSize: "0.88rem",
+                              fontWeight: 600,
+                              color: "var(--color-text-primary)",
+                            }}
+                          >
+                            {item.title}
+                          </span>
+                          {item.badge && (
+                            <span
+                              style={{
+                                fontSize: "0.68rem",
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: 12,
+                                background: item.badge.includes("Repeated") || item.badge.includes("Frequent")
+                                  ? "#eef2ff"
+                                  : "#f1f5f9",
+                                color: item.badge.includes("Repeated") || item.badge.includes("Frequent")
+                                  ? "#4338ca"
+                                  : "#64748b",
+                                border: item.badge.includes("Repeated") || item.badge.includes("Frequent")
+                                  ? "1px solid #c7d2fe"
+                                  : "1px solid #e2e8f0",
+                              }}
+                            >
+                              {item.badge}
+                            </span>
+                          )}
+                        </div>
                         <span
                           style={{
                             fontSize: "0.78rem",

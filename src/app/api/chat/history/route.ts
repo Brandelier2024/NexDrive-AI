@@ -297,12 +297,138 @@ export async function GET(req: Request) {
       activeMessages = messages || [];
     }
 
+    // Fetch and compute user's personalized top repeated search topics/keywords
+    const frequentTopics: Array<{
+      title: string;
+      desc: string;
+      query: string;
+      count?: number;
+      badge?: string;
+    }> = [];
+
+    if (offset === 0) {
+      try {
+        const { data: userMsgs } = await supabase
+          .from("chat_messages")
+          .select("content, created_at")
+          .eq("user_id", userId)
+          .eq("role", "user")
+          .order("created_at", { ascending: false })
+          .limit(100);
+
+        if (userMsgs && userMsgs.length > 0) {
+          const queryFrequency = new Map<string, { query: string; count: number; lastUsed: number }>();
+          const keywordFrequency = new Map<string, { keyword: string; count: number; sampleQuery: string }>();
+
+          const stopWords = new Set([
+            "a", "an", "the", "in", "on", "at", "for", "to", "of", "and", "or", "is", "are", "was",
+            "were", "i", "me", "my", "we", "our", "you", "your", "find", "show", "get", "where",
+            "what", "how", "can", "please", "all", "any", "some", "with", "from", "by", "about",
+            "this", "that", "there", "here", "files", "file", "folder", "folders"
+          ]);
+
+          for (const row of userMsgs) {
+            const raw = (row.content || "").trim();
+            if (!raw || raw.length < 3) continue;
+            const normalized = raw.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+            const time = new Date(row.created_at).getTime();
+
+            // Track exact/normalized queries
+            const existingQ = queryFrequency.get(normalized);
+            if (existingQ) {
+              existingQ.count += 1;
+              if (time > existingQ.lastUsed) existingQ.lastUsed = time;
+            } else {
+              queryFrequency.set(normalized, { query: raw, count: 1, lastUsed: time });
+            }
+
+            // Track recurring keywords
+            const tokens = normalized.split(" ").filter((w: string) => w.length >= 3 && !stopWords.has(w));
+            for (const token of tokens) {
+              const existingKw = keywordFrequency.get(token);
+              if (existingKw) {
+                existingKw.count += 1;
+              } else {
+                keywordFrequency.set(token, { keyword: token, count: 1, sampleQuery: raw });
+              }
+            }
+          }
+
+          const seenQueries = new Set<string>();
+
+          // 1. Repeated searches (count >= 2)
+          const repeatedQueries = Array.from(queryFrequency.values())
+            .filter((item) => item.count >= 2)
+            .sort((a, b) => b.count - a.count || b.lastUsed - a.lastUsed);
+
+          for (const item of repeatedQueries) {
+            if (frequentTopics.length >= 4) break;
+            const key = item.query.toLowerCase();
+            if (!seenQueries.has(key)) {
+              seenQueries.add(key);
+              frequentTopics.push({
+                title: item.query.length > 40 ? `${item.query.slice(0, 37)}…` : item.query,
+                desc: `Searched ${item.count} times`,
+                query: item.query,
+                count: item.count,
+                badge: `Repeated ${item.count}x`,
+              });
+            }
+          }
+
+          // 2. Most frequent topics/keywords across different queries (count >= 2)
+          const topKeywords = Array.from(keywordFrequency.values())
+            .filter((item) => item.count >= 2)
+            .sort((a, b) => b.count - a.count);
+
+          for (const kwItem of topKeywords) {
+            if (frequentTopics.length >= 4) break;
+            const formattedKeyword = kwItem.keyword.charAt(0).toUpperCase() + kwItem.keyword.slice(1);
+            const title = `${formattedKeyword} Files & Assets`;
+            const key = kwItem.sampleQuery.toLowerCase();
+            if (!seenQueries.has(key)) {
+              seenQueries.add(key);
+              frequentTopics.push({
+                title,
+                desc: `Frequent topic (${kwItem.count} searches)`,
+                query: kwItem.sampleQuery,
+                count: kwItem.count,
+                badge: "Frequent Topic",
+              });
+            }
+          }
+
+          // 3. If still less than 4, include the user's most recent distinct searches
+          const recentDistinct = Array.from(queryFrequency.values())
+            .sort((a, b) => b.lastUsed - a.lastUsed);
+
+          for (const item of recentDistinct) {
+            if (frequentTopics.length >= 4) break;
+            const key = item.query.toLowerCase();
+            if (!seenQueries.has(key)) {
+              seenQueries.add(key);
+              frequentTopics.push({
+                title: item.query.length > 40 ? `${item.query.slice(0, 37)}…` : item.query,
+                desc: "Recent search topic",
+                query: item.query,
+                count: item.count,
+                badge: "Recent",
+              });
+            }
+          }
+        }
+      } catch (frequentErr) {
+        console.error("[Chat History] Error extracting frequent topics:", frequentErr);
+      }
+    }
+
     return NextResponse.json({
       sessions: sessionsList,
       activeSessionId: mostRecentSessionId,
       messages: activeMessages,
       total: totalSessions,
       hasMore,
+      frequentTopics,
     });
   } catch (error: unknown) {
     console.error("[Chat History Error]:", error);
