@@ -24,15 +24,28 @@ function safeTimingCompare(a: string, b: string): boolean {
 }
 
 /**
+ * Safely resolves the server-side Supabase client if configured
+ */
+function getSupabaseClient(): ReturnType<typeof createServerSupabaseClient> | null {
+  try {
+    return createServerSupabaseClient();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deletes an OTP entry from both the in-memory map and Supabase table
  */
 async function deleteOtp(email: string): Promise<void> {
   otpStore.delete(email);
-  try {
-    const supabase = createServerSupabaseClient();
-    await supabase.from("email_verifications").delete().eq("email", email);
-  } catch {
-    // In-memory fallback if Supabase is unavailable
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from("email_verifications").delete().eq("email", email);
+    } catch {
+      // In-memory fallback if Supabase is unavailable
+    }
   }
 }
 
@@ -50,30 +63,30 @@ export async function storeOtp(email: string, code: string): Promise<void> {
   const normalizedEmail = email.toLowerCase().trim();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  // 1. Store in memory map
+  // 1. Always record in the in-memory OTP store so the code is never lost
+  // even if Supabase table is not yet migrated or PostgREST schema cache is stale
   otpStore.set(normalizedEmail, { code, expiresAt, attempts: 0 });
 
   // 2. Persist in Supabase email_verifications table if available
-  try {
-    const supabase = createServerSupabaseClient();
-    const { error } = await supabase.from("email_verifications").upsert({
-      email: normalizedEmail,
-      code,
-      expires_at: new Date(expiresAt).toISOString(),
-      attempts: 0,
-    }, { onConflict: "email" });
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { error } = await supabase.from("email_verifications").upsert({
+        email: normalizedEmail,
+        code,
+        expires_at: new Date(expiresAt).toISOString(),
+        attempts: 0,
+      }, { onConflict: "email" });
 
-    if (error) {
-      console.error("[OTP Store] Failed to persist OTP to Supabase email_verifications:", error.message || error);
-      throw new Error(`Failed to securely save verification code: ${error.message || "Database persistence error"}`);
+      if (error) {
+        console.warn(
+          `[OTP Store] Supabase email_verifications table unavailable (${error.message || "error"}). Falling back to in-memory OTP store.`
+        );
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[OTP Store] Supabase persistence exception (${message}). Falling back to in-memory OTP store.`);
     }
-  } catch (err: unknown) {
-    const errorObj = err instanceof Error ? err : new Error(String(err));
-    // If Supabase is unavailable (e.g. unconfigured in local dev), log and use in-memory fallback
-    if (errorObj.message.includes("Failed to securely save verification code")) {
-      throw errorObj;
-    }
-    console.warn("[OTP Store] Supabase unavailable, utilizing in-memory OTP fallback:", errorObj.message);
   }
 }
 
@@ -84,7 +97,51 @@ export async function verifyOtp(email: string, inputCode: string): Promise<boole
   const normalizedEmail = email.toLowerCase().trim();
   const trimmedCode = inputCode.trim();
 
-  // 1. Check in-memory store
+  // 1. Try Supabase first if available
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("email_verifications")
+        .select("*")
+        .eq("email", normalizedEmail)
+        .single();
+
+      if (!error && data) {
+        const isExpired = new Date(data.expires_at).getTime() < Date.now();
+        if (isExpired) {
+          await deleteOtp(normalizedEmail);
+          return false;
+        }
+
+        const currentAttempts = typeof data.attempts === "number" ? data.attempts : 0;
+        if (currentAttempts >= 5) {
+          await deleteOtp(normalizedEmail);
+          return false;
+        }
+
+        if (safeTimingCompare(data.code, trimmedCode)) {
+          await deleteOtp(normalizedEmail);
+          return true;
+        }
+
+        const nextAttempts = currentAttempts + 1;
+        if (nextAttempts >= 5) {
+          await deleteOtp(normalizedEmail);
+        } else {
+          await supabase
+            .from("email_verifications")
+            .update({ attempts: nextAttempts })
+            .eq("email", normalizedEmail);
+        }
+        return false;
+      }
+    } catch {
+      // Supabase query error, table missing, or connection issue -> proceed to in-memory fallback
+    }
+  }
+
+  // 2. Fallback: Check in-memory store (active when Supabase table is not yet created or missing from cache)
   const memEntry = otpStore.get(normalizedEmail);
   if (memEntry) {
     if (Date.now() > memEntry.expiresAt) {
@@ -107,47 +164,6 @@ export async function verifyOtp(email: string, inputCode: string): Promise<boole
       await deleteOtp(normalizedEmail);
     }
     return false;
-  }
-
-  // 2. Check Supabase email_verifications table
-  try {
-    const supabase = createServerSupabaseClient();
-    const { data } = await supabase
-      .from("email_verifications")
-      .select("*")
-      .eq("email", normalizedEmail)
-      .single();
-
-    if (data) {
-      const isExpired = new Date(data.expires_at).getTime() < Date.now();
-      if (isExpired) {
-        await deleteOtp(normalizedEmail);
-        return false;
-      }
-
-      const currentAttempts = typeof data.attempts === "number" ? data.attempts : 0;
-      if (currentAttempts >= 5) {
-        await deleteOtp(normalizedEmail);
-        return false;
-      }
-
-      if (safeTimingCompare(data.code, trimmedCode)) {
-        await deleteOtp(normalizedEmail);
-        return true;
-      }
-
-      const nextAttempts = currentAttempts + 1;
-      if (nextAttempts >= 5) {
-        await deleteOtp(normalizedEmail);
-      } else {
-        await supabase
-          .from("email_verifications")
-          .update({ attempts: nextAttempts })
-          .eq("email", normalizedEmail);
-      }
-    }
-  } catch {
-    // In-memory fallback if Supabase query fails
   }
 
   return false;

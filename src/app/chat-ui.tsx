@@ -1,9 +1,22 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { FolderCard, ChatResponse } from "@/lib/types";
+
+function subscribeToWindowResize(callback: () => void) {
+  window.addEventListener("resize", callback);
+  return () => window.removeEventListener("resize", callback);
+}
+
+function getIsMobileSnapshot() {
+  return typeof window !== "undefined" && window.innerWidth <= 768;
+}
+
+function getIsMobileServerSnapshot() {
+  return false;
+}
 
 let globalIdCounter = 0;
 function generateUniqueId(prefix: string): string {
@@ -74,12 +87,28 @@ export default function ChatUI({ user }: ChatUIProps) {
     messageCount: number;
   }[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("default");
-  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+  const isMobile = useSyncExternalStore(
+    subscribeToWindowResize,
+    getIsMobileSnapshot,
+    getIsMobileServerSnapshot
+  );
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState(true);
+  const isSidebarOpen = isMobile ? isMobileSidebarOpen : isDesktopSidebarOpen;
+
+  const setIsSidebarOpen = (action: boolean | ((prev: boolean) => boolean)) => {
+    if (isMobile) {
+      setIsMobileSidebarOpen(action);
+    } else {
+      setIsDesktopSidebarOpen(action);
+    }
+  };
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
   // Profile & Account Management State
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [profileData, setProfileData] = useState<{
     id?: string;
     name?: string;
@@ -125,7 +154,7 @@ export default function ChatUI({ user }: ChatUIProps) {
       .then((data) => {
         if (active && data) setSyncStatus(data);
       })
-      .catch(() => {});
+      .catch(() => { });
 
     fetch("/api/chat/history")
       .then((res) => (res.ok ? res.json() : null))
@@ -146,7 +175,7 @@ export default function ChatUI({ user }: ChatUIProps) {
           setMessages(mapped);
         }
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => {
         if (active) setIsHistoryLoading(false);
       });
@@ -158,6 +187,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
   const handleSelectSession = async (sessionId: string) => {
     userNavigatedRef.current = true;
+    if (isMobile) setIsSidebarOpen(false);
     if (sessionId === activeSessionId) return;
     setActiveSessionId(sessionId);
     setIsLoading(true);
@@ -187,6 +217,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
   const handleNewChat = () => {
     userNavigatedRef.current = true;
+    if (isMobile) setIsSidebarOpen(false);
     const newSessionId = generateUniqueId("session");
     setActiveSessionId(newSessionId);
     setMessages([]);
@@ -414,6 +445,7 @@ export default function ChatUI({ user }: ChatUIProps) {
     >
       {/* ─── Top Navbar ────────────────────────────────────────────── */}
       <header
+        className="chat-header"
         style={{
           display: "flex",
           alignItems: "center",
@@ -422,7 +454,8 @@ export default function ChatUI({ user }: ChatUIProps) {
           background: "var(--color-surface)",
           borderBottom: "1px solid var(--color-border)",
           boxShadow: "var(--shadow-sm)",
-          zIndex: 10,
+          position: "relative",
+          zIndex: isUserMenuOpen ? 95 : 30,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -451,7 +484,7 @@ export default function ChatUI({ user }: ChatUIProps) {
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
-            <span style={{ fontSize: "0.8rem" }}>History</span>
+            <span className="chat-header-history-text" style={{ fontSize: "0.8rem" }}>History</span>
             {sessions.length > 0 && (
               <span
                 style={{
@@ -469,6 +502,7 @@ export default function ChatUI({ user }: ChatUIProps) {
           </button>
 
           <div
+            className="chat-header-logo"
             style={{
               width: 38,
               height: 38,
@@ -478,6 +512,7 @@ export default function ChatUI({ user }: ChatUIProps) {
               alignItems: "center",
               justifyContent: "center",
               boxShadow: "0 2px 8px rgba(79, 70, 229, 0.25)",
+              flexShrink: 0,
             }}
           >
             <svg
@@ -499,69 +534,83 @@ export default function ChatUI({ user }: ChatUIProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Link
                 href="/"
+                className="chat-header-title"
                 style={{
                   textDecoration: "none",
                   fontSize: "1.05rem",
                   fontWeight: 700,
                   color: "var(--color-text-primary)",
                   letterSpacing: "-0.02em",
+                  display: "inline-flex",
+                  alignItems: "center",
                 }}
               >
                 DriveFinder AI
+                <span
+                  className="chat-header-mobile-dot"
+                  style={{
+                    background: syncStatus?.mode === "live" ? "#10b981" : "#6366f1",
+                  }}
+                  title={syncStatus?.mode === "live" ? "Live Graph API Connected" : "Demo Mode"}
+                />
               </Link>
-              <span
-                style={{
-                  fontSize: "0.72rem",
-                  fontWeight: 600,
-                  padding: "2px 8px",
-                  borderRadius: "var(--radius-full)",
-                  background:
-                    syncStatus?.mode === "live"
-                      ? "rgba(16, 185, 129, 0.12)"
-                      : "rgba(99, 102, 241, 0.12)",
-                  color: syncStatus?.mode === "live" ? "#059669" : "#4f46e5",
-                  border: `1px solid ${
-                    syncStatus?.mode === "live"
-                      ? "rgba(16, 185, 129, 0.25)"
-                      : "rgba(99, 102, 241, 0.25)"
-                  }`,
-                }}
-              >
-                {syncStatus?.mode === "live" ? "● Live Graph API" : "● Demo Mode"}
-              </span>
-              {syncStatus?.has_delta_link && (
+              <div className="chat-header-desktop-meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
                   style={{
-                    fontSize: "0.7rem",
+                    fontSize: "0.72rem",
                     fontWeight: 600,
                     padding: "2px 8px",
                     borderRadius: "var(--radius-full)",
-                    background: "rgba(14, 165, 233, 0.12)",
-                    color: "#0369a1",
-                    border: "1px solid rgba(14, 165, 233, 0.25)",
+                    background:
+                      syncStatus?.mode === "live"
+                        ? "rgba(16, 185, 129, 0.12)"
+                        : "rgba(99, 102, 241, 0.12)",
+                    color: syncStatus?.mode === "live" ? "#059669" : "#4f46e5",
+                    border: `1px solid ${syncStatus?.mode === "live"
+                        ? "rgba(16, 185, 129, 0.25)"
+                        : "rgba(99, 102, 241, 0.25)"
+                      }`,
                   }}
                 >
-                  ⚡ Add-on Delta Sync
+                  {syncStatus?.mode === "live" ? "● Live Graph API" : "● Demo Mode"}
                 </span>
-              )}
+                {syncStatus?.has_delta_link && (
+                  <span
+                    style={{
+                      fontSize: "0.7rem",
+                      fontWeight: 600,
+                      padding: "2px 8px",
+                      borderRadius: "var(--radius-full)",
+                      background: "rgba(14, 165, 233, 0.12)",
+                      color: "#0369a1",
+                      border: "1px solid rgba(14, 165, 233, 0.25)",
+                    }}
+                  >
+                    ⚡ Add-on Delta Sync
+                  </span>
+                )}
+              </div>
             </div>
-            <span
-              style={{
-                fontSize: "0.76rem",
-                color: "var(--color-text-tertiary)",
-              }}
-            >
-              {(syncStatus?.total_items || 0).toLocaleString()} assets indexed in {(syncStatus?.folders_count || 0).toLocaleString()} folders
-            </span>
+            <div className="chat-header-desktop-meta">
+              <span
+                style={{
+                  fontSize: "0.76rem",
+                  color: "var(--color-text-tertiary)",
+                }}
+              >
+                {(syncStatus?.total_items || 0).toLocaleString()} assets indexed in {(syncStatus?.folders_count || 0).toLocaleString()} folders
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Right actions */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: 14 }}>
           {/* Sync Button */}
           <button
             onClick={handleSync}
             disabled={isSyncing}
+            className="chat-header-sync-btn"
             style={{
               display: "flex",
               alignItems: "center",
@@ -594,10 +643,12 @@ export default function ChatUI({ user }: ChatUIProps) {
             >
               <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
             </svg>
-            {isSyncing ? "Syncing..." : "Sync OneDrive"}
+            <span className="chat-header-sync-label">
+              {isSyncing ? "Syncing..." : "Sync OneDrive"}
+            </span>
           </button>
 
-          {/* User Profile Trigger & Sign Out */}
+          {/* User Profile Trigger & Popover/Bottom Sheet */}
           <div
             style={{
               display: "flex",
@@ -605,31 +656,38 @@ export default function ChatUI({ user }: ChatUIProps) {
               gap: 8,
               paddingLeft: 12,
               borderLeft: "1px solid var(--color-border)",
+              position: "relative",
             }}
           >
             <button
-              onClick={handleOpenProfile}
+              onClick={() => setIsUserMenuOpen((prev) => !prev)}
               id="profile-trigger-btn"
-              title="Click to view profile & account settings"
+              className="chat-profile-btn"
+              title="Click to view profile, sync & account settings"
+              aria-expanded={isUserMenuOpen}
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
                 padding: "4px 8px",
                 borderRadius: "var(--radius-md)",
-                background: "transparent",
-                border: "1px solid transparent",
+                background: isUserMenuOpen ? "#f1f5f9" : "transparent",
+                border: isUserMenuOpen ? "1px solid var(--color-border)" : "1px solid transparent",
                 cursor: "pointer",
                 textAlign: "left",
                 transition: "all 0.15s ease",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = "#f1f5f9";
-                e.currentTarget.style.borderColor = "var(--color-border)";
+                if (!isUserMenuOpen) {
+                  e.currentTarget.style.background = "#f1f5f9";
+                  e.currentTarget.style.borderColor = "var(--color-border)";
+                }
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.borderColor = "transparent";
+                if (!isUserMenuOpen) {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "transparent";
+                }
               }}
             >
               <div
@@ -650,7 +708,7 @@ export default function ChatUI({ user }: ChatUIProps) {
               >
                 {(user.name || user.email || "U").charAt(0).toUpperCase()}
               </div>
-              <div style={{ display: "flex", flexDirection: "column" }}>
+              <div className="chat-profile-meta" style={{ display: "flex", flexDirection: "column" }}>
                 <span
                   style={{
                     fontSize: "0.8rem",
@@ -671,6 +729,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                 </span>
               </div>
               <span
+                className="chat-profile-badge"
                 style={{
                   fontSize: "0.7rem",
                   color: "#4f46e5",
@@ -689,6 +748,7 @@ export default function ChatUI({ user }: ChatUIProps) {
             <button
               onClick={() => signOut({ callbackUrl: "/auth/signin" })}
               title="Sign Out"
+              className="chat-signout-btn"
               style={{
                 marginLeft: 2,
                 padding: "6px 10px",
@@ -709,6 +769,234 @@ export default function ChatUI({ user }: ChatUIProps) {
             >
               Sign out
             </button>
+
+            {/* Profile & Account Popover (Desktop) / Native Bottom Sheet (Mobile) */}
+            {isUserMenuOpen && (
+              <>
+                <div
+                  className="chat-user-menu-backdrop"
+                  onClick={() => setIsUserMenuOpen(false)}
+                />
+                <div
+                  className="chat-user-menu-popover"
+                  id="chat-user-menu-popover"
+                >
+                  <div className="chat-user-menu-drag-handle" />
+
+                  {/* Header info */}
+                  <div className="chat-user-menu-header">
+                    <div
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: "var(--radius-full)",
+                        background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontWeight: 700,
+                        fontSize: "1.1rem",
+                        color: "#ffffff",
+                        boxShadow: "0 4px 10px rgba(79, 70, 229, 0.3)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {(user.name || user.email || "U").charAt(0).toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: "0.95rem",
+                          color: "var(--color-text-primary)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {user.name || "Employee"}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: "0.78rem",
+                          color: "var(--color-text-secondary)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {user.email}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: "0.68rem",
+                          fontWeight: 600,
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "rgba(16, 185, 129, 0.12)",
+                          color: "#059669",
+                          border: "1px solid rgba(16, 185, 129, 0.25)",
+                        }}
+                      >
+                        <span>●</span> Brandelier Corporate • Verified
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="chat-user-menu-divider" />
+
+                  {/* OneDrive Sync Item */}
+                  <div className="chat-user-menu-section">
+                    <button
+                      onClick={() => {
+                        handleSync();
+                      }}
+                      disabled={isSyncing}
+                      className="chat-user-menu-item-btn"
+                      id="user-menu-sync-btn"
+                    >
+                      <div className="chat-user-menu-item-icon" style={{ background: "rgba(79, 70, 229, 0.1)", color: "#4f46e5" }}>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          style={{
+                            animation: isSyncing ? "spin 1s linear infinite" : "none",
+                          }}
+                        >
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                        </svg>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <span style={{ fontWeight: 600, fontSize: "0.86rem", color: "var(--color-text-primary)" }}>
+                            {isSyncing ? "Syncing Changes..." : "Sync OneDrive"}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "0.68rem",
+                              fontWeight: 600,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: syncStatus?.mode === "live" ? "rgba(16, 185, 129, 0.12)" : "rgba(99, 102, 241, 0.12)",
+                              color: syncStatus?.mode === "live" ? "#059669" : "#4f46e5",
+                            }}
+                          >
+                            {syncStatus?.mode === "live" ? "Live API" : "Ready"}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "0.74rem", color: "var(--color-text-tertiary)", marginTop: 2 }}>
+                          {(syncStatus?.total_items || 0).toLocaleString()} assets indexed in {(syncStatus?.folders_count || 0).toLocaleString()} folders
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div className="chat-user-menu-divider" />
+
+                  {/* Account Profile Modal Trigger */}
+                  <div className="chat-user-menu-section">
+                    <button
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        handleOpenProfile();
+                      }}
+                      className="chat-user-menu-item-btn"
+                      id="user-menu-profile-btn"
+                    >
+                      <div className="chat-user-menu-item-icon" style={{ background: "rgba(14, 165, 233, 0.1)", color: "#0284c7" }}>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                          <circle cx="12" cy="7" r="4" />
+                        </svg>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                        <div style={{ fontWeight: 600, fontSize: "0.86rem", color: "var(--color-text-primary)" }}>
+                          Account & Profile
+                        </div>
+                        <div style={{ fontSize: "0.74rem", color: "var(--color-text-tertiary)", marginTop: 2 }}>
+                          View tenant details, security & storage
+                        </div>
+                      </div>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ color: "var(--color-text-tertiary)" }}
+                      >
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="chat-user-menu-divider" />
+
+                  {/* Sign Out Button */}
+                  <div className="chat-user-menu-section">
+                    <button
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        signOut({ callbackUrl: "/auth/signin" });
+                      }}
+                      className="chat-user-menu-item-btn chat-user-menu-signout"
+                      id="user-menu-signout-btn"
+                    >
+                      <div className="chat-user-menu-item-icon" style={{ background: "rgba(239, 68, 68, 0.1)", color: "#dc2626" }}>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                          <polyline points="16 17 21 12 16 7" />
+                          <line x1="21" y1="12" x2="9" y2="12" />
+                        </svg>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                        <div style={{ fontWeight: 600, fontSize: "0.86rem", color: "#dc2626" }}>
+                          Sign Out
+                        </div>
+                        <div style={{ fontSize: "0.74rem", color: "var(--color-text-tertiary)", marginTop: 2 }}>
+                          End your session securely
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -740,22 +1028,66 @@ export default function ChatUI({ user }: ChatUIProps) {
 
       {/* ─── Body Layout: Sidebar + Main Chat Area ─────────────────── */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden", position: "relative" }}>
+        {/* Mobile Backdrop Overlay */}
+        {isMobile && isSidebarOpen && (
+          <div
+            className="chat-sidebar-backdrop"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
+
         {/* ─── Left Sidebar: Chat History ─── */}
         <aside
           id="chat-history-sidebar"
+          className={`chat-sidebar-drawer ${isSidebarOpen ? "sidebar-open" : ""}`}
           style={{
-            width: isSidebarOpen ? 290 : 0,
-            minWidth: isSidebarOpen ? 290 : 0,
+            width: isMobile ? undefined : (isSidebarOpen ? 290 : 0),
+            minWidth: isMobile ? undefined : (isSidebarOpen ? 290 : 0),
             borderRight: isSidebarOpen ? "1px solid var(--color-border)" : "none",
             background: "var(--color-surface)",
             display: "flex",
             flexDirection: "column",
             transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
             overflow: "hidden",
-            zIndex: 15,
+            zIndex: 50,
             boxShadow: isSidebarOpen ? "2px 0 8px rgba(0,0,0,0.03)" : "none",
           }}
         >
+          {/* Mobile Sidebar Close Bar */}
+          <div
+            className="chat-sidebar-close-btn"
+            style={{
+              padding: "12px 14px",
+              borderBottom: "1px solid var(--color-border)",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: "var(--color-text-primary)" }}>
+              Search History
+            </span>
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: 6,
+                borderRadius: 6,
+                cursor: "pointer",
+                color: "#64748b",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              aria-label="Close search history"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+
           {/* Sidebar Top: New Search Button */}
           <div style={{ padding: "16px 14px 12px 14px", borderBottom: "1px solid var(--color-border)" }}>
             <button
@@ -1009,6 +1341,7 @@ export default function ChatUI({ user }: ChatUIProps) {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
           {/* Main Chat Scroll Area */}
           <div
+            className="chat-scroll-container"
             style={{
               flex: 1,
               overflowY: "auto",
@@ -1019,657 +1352,674 @@ export default function ChatUI({ user }: ChatUIProps) {
             }}
           >
             <div style={{ width: "100%", maxWidth: 880 }}>
-          {/* Welcome Screen when no messages */}
-          {messages.length === 0 && (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                textAlign: "center",
-                marginTop: 40,
-                marginBottom: 30,
-              }}
-            >
-              <div
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: "var(--radius-md)",
-                  background: "linear-gradient(135deg, #eef2ff, #e0e7ff)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginBottom: 18,
-                  boxShadow: "var(--shadow-sm)",
-                }}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="28"
-                  height="28"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="#4f46e5"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              {/* Welcome Screen when no messages */}
+              {messages.length === 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    textAlign: "center",
+                    marginTop: 40,
+                    marginBottom: 30,
+                  }}
                 >
-                  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                </svg>
-              </div>
-
-              <h2
-                style={{
-                  fontSize: "1.6rem",
-                  fontWeight: 700,
-                  color: "var(--color-text-primary)",
-                  letterSpacing: "-0.03em",
-                  marginBottom: 8,
-                }}
-              >
-                Find Company Files & Folders Instantly
-              </h2>
-              <p
-                style={{
-                  fontSize: "0.95rem",
-                  color: "var(--color-text-secondary)",
-                  maxWidth: 540,
-                  lineHeight: 1.5,
-                  marginBottom: 32,
-                }}
-              >
-                Ask naturally for any video, photoshoot, brand logo, or campaign folder.
-                Get verified, clickable OneDrive hyperlinks straight to the source.
-              </p>
-
-              {/* Suggestion Cards */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-                  gap: 14,
-                  width: "100%",
-                }}
-              >
-                {SUGGESTED_QUERIES.map((item, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleSendMessage(item.query)}
+                  <div
                     style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-start",
-                      padding: "16px 18px",
-                      background: "#ffffff",
-                      border: "1px solid var(--color-border)",
+                      width: 56,
+                      height: 56,
                       borderRadius: "var(--radius-md)",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      transition: "all var(--transition-fast)",
+                      background: "linear-gradient(135deg, #eef2ff, #e0e7ff)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      marginBottom: 18,
                       boxShadow: "var(--shadow-sm)",
                     }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = "var(--color-brand-400)";
-                      e.currentTarget.style.transform = "translateY(-2px)";
-                      e.currentTarget.style.boxShadow = "var(--shadow-md)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = "var(--color-border)";
-                      e.currentTarget.style.transform = "none";
-                      e.currentTarget.style.boxShadow = "var(--shadow-sm)";
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="28"
+                      height="28"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#4f46e5"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                    </svg>
+                  </div>
+
+                  <h2
+                    className="chat-welcome-title"
+                    style={{
+                      fontSize: "1.6rem",
+                      fontWeight: 700,
+                      color: "var(--color-text-primary)",
+                      letterSpacing: "-0.03em",
+                      marginBottom: 8,
                     }}
                   >
-                    <span
-                      style={{
-                        fontSize: "0.88rem",
-                        fontWeight: 600,
-                        color: "var(--color-text-primary)",
-                        marginBottom: 4,
-                      }}
-                    >
-                      {item.title}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: "0.78rem",
-                        color: "var(--color-text-tertiary)",
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {item.desc}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+                    Find Company Files & Folders Instantly
+                  </h2>
+                  <p
+                    className="chat-welcome-desc"
+                    style={{
+                      fontSize: "0.95rem",
+                      color: "var(--color-text-secondary)",
+                      maxWidth: 540,
+                      lineHeight: 1.5,
+                      marginBottom: 32,
+                    }}
+                  >
+                    Ask naturally for any video, photoshoot, brand logo, or campaign folder.
+                    Get verified, clickable OneDrive hyperlinks straight to the source.
+                  </p>
 
-          {/* Messages Stream */}
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-                marginBottom: 24,
-              }}
-            >
-              {/* Message Header / Timestamp */}
-              <span
-                style={{
-                  fontSize: "0.72rem",
-                  color: "var(--color-text-tertiary)",
-                  marginBottom: 6,
-                  marginLeft: msg.role === "assistant" ? 4 : 0,
-                  marginRight: msg.role === "user" ? 4 : 0,
-                }}
-              >
-                {msg.role === "user" ? "You" : "OneDrive Locator"} • {msg.timestamp}
-              </span>
+                  {/* Suggestion Cards */}
+                  <div
+                    className="chat-suggestions-grid"
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                      gap: 14,
+                      width: "100%",
+                    }}
+                  >
+                    {SUGGESTED_QUERIES.map((item, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleSendMessage(item.query)}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                          padding: "16px 18px",
+                          background: "#ffffff",
+                          border: "1px solid var(--color-border)",
+                          borderRadius: "var(--radius-md)",
+                          textAlign: "left",
+                          cursor: "pointer",
+                          transition: "all var(--transition-fast)",
+                          boxShadow: "var(--shadow-sm)",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = "var(--color-brand-400)";
+                          e.currentTarget.style.transform = "translateY(-2px)";
+                          e.currentTarget.style.boxShadow = "var(--shadow-md)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = "var(--color-border)";
+                          e.currentTarget.style.transform = "none";
+                          e.currentTarget.style.boxShadow = "var(--shadow-sm)";
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: "0.88rem",
+                            fontWeight: 600,
+                            color: "var(--color-text-primary)",
+                            marginBottom: 4,
+                          }}
+                        >
+                          {item.title}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "0.78rem",
+                            color: "var(--color-text-tertiary)",
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {item.desc}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-              {/* Message Body */}
-              <div
-                style={{
-                  maxWidth: "92%",
-                  padding: msg.role === "user" ? "12px 18px" : "18px 22px",
-                  borderRadius:
-                    msg.role === "user"
-                      ? "18px 18px 4px 18px"
-                      : "18px 18px 18px 4px",
-                  background:
-                    msg.role === "user"
-                      ? "linear-gradient(135deg, #4f46e5, #6366f1)"
-                      : "#ffffff",
-                  color:
-                    msg.role === "user"
-                      ? "#ffffff"
-                      : "var(--color-text-primary)",
-                  border:
-                    msg.role === "assistant"
-                      ? "1px solid var(--color-border)"
-                      : "none",
-                  boxShadow:
-                    msg.role === "user"
-                      ? "0 3px 12px rgba(79, 70, 229, 0.22)"
-                      : "var(--shadow-sm)",
-                  fontSize: "0.92rem",
-                  lineHeight: 1.6,
-                }}
-              >
-                {/* User Message Text */}
-                {msg.role === "user" && (
-                  <p style={{ margin: 0, fontWeight: 500 }}>{msg.content}</p>
-                )}
+              {/* Messages Stream */}
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: msg.role === "user" ? "flex-end" : "flex-start",
+                    marginBottom: 24,
+                  }}
+                >
+                  {/* Message Header / Timestamp */}
+                  <span
+                    style={{
+                      fontSize: "0.72rem",
+                      color: "var(--color-text-tertiary)",
+                      marginBottom: 6,
+                      marginLeft: msg.role === "assistant" ? 4 : 0,
+                      marginRight: msg.role === "user" ? 4 : 0,
+                    }}
+                  >
+                    {msg.role === "user" ? "You" : "OneDrive Locator"} • {msg.timestamp}
+                  </span>
 
-                {/* Assistant Message Markdown */}
-                {msg.role === "assistant" && (
-                  <div>
-                    <MarkdownRenderer content={msg.content} />
+                  {/* Message Body */}
+                  <div
+                    className="chat-msg-bubble"
+                    style={{
+                      maxWidth: msg.role === "user" ? "88%" : "95%",
+                      padding: msg.role === "user" ? "12px 18px" : "18px 22px",
+                      borderRadius:
+                        msg.role === "user"
+                          ? "18px 18px 4px 18px"
+                          : "18px 18px 18px 4px",
+                      background:
+                        msg.role === "user"
+                          ? "linear-gradient(135deg, #4f46e5, #6366f1)"
+                          : "#ffffff",
+                      color:
+                        msg.role === "user"
+                          ? "#ffffff"
+                          : "var(--color-text-primary)",
+                      border:
+                        msg.role === "assistant"
+                          ? "1px solid var(--color-border)"
+                          : "none",
+                      boxShadow:
+                        msg.role === "user"
+                          ? "0 3px 12px rgba(79, 70, 229, 0.22)"
+                          : "var(--shadow-sm)",
+                      fontSize: "0.92rem",
+                      lineHeight: 1.6,
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {/* User Message Text */}
+                    {msg.role === "user" && (
+                      <p style={{ margin: 0, fontWeight: 500 }}>{msg.content}</p>
+                    )}
 
-                    {/* Structured Folder Redirect Cards */}
-                    {msg.folder_cards && msg.folder_cards.length > 0 && (
-                      <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 14 }}>
-                        {msg.folder_cards.map((folder, fIdx) => (
-                          <div
-                            key={fIdx}
-                            style={{
-                              border: "1px solid var(--color-border)",
-                              borderRadius: "var(--radius-md)",
-                              padding: "16px 18px",
-                              background: "var(--color-surface-hover)",
-                              boxShadow: "var(--shadow-sm)",
-                            }}
-                          >
-                            {/* Folder Header */}
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                flexWrap: "wrap",
-                                gap: 10,
-                                marginBottom: 12,
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <span style={{ fontSize: "1.25rem" }}>📁</span>
-                                <div>
-                                  <div
-                                    style={{
-                                      fontSize: "0.95rem",
-                                      fontWeight: 700,
-                                      color: "var(--color-text-primary)",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 8,
-                                    }}
-                                  >
-                                    <span>{folder.parent_folder_name}</span>
-                                    {folder.is_personal ? (
-                                      <span
-                                        style={{
-                                          fontSize: "0.68rem",
-                                          fontWeight: 600,
-                                          color: "#7c3aed",
-                                          background: "#f5f3ff",
-                                          border: "1px solid #ddd6fe",
-                                          padding: "1px 7px",
-                                          borderRadius: 9999,
-                                        }}
-                                      >
-                                        Personal OneDrive
-                                      </span>
-                                    ) : (
-                                      <span
-                                        style={{
-                                          fontSize: "0.68rem",
-                                          fontWeight: 600,
-                                          color: "#475569",
-                                          background: "#f1f5f9",
-                                          border: "1px solid #e2e8f0",
-                                          padding: "1px 7px",
-                                          borderRadius: 9999,
-                                        }}
-                                      >
-                                        Company Shared
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div
-                                    style={{
-                                      fontSize: "0.76rem",
-                                      color: "var(--color-text-tertiary)",
-                                      fontFamily: "monospace",
-                                    }}
-                                  >
-                                    {folder.folder_path}
-                                  </div>
-                                </div>
-                              </div>
+                    {/* Assistant Message Markdown */}
+                    {msg.role === "assistant" && (
+                      <div>
+                        <MarkdownRenderer content={msg.content} />
 
-                              {/* Primary Folder Link CTA */}
-                              <a
-                                href={folder.folder_web_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                        {/* Structured Folder Redirect Cards */}
+                        {msg.folder_cards && msg.folder_cards.length > 0 && (
+                          <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+                            {msg.folder_cards.map((folder, fIdx) => (
+                              <div
+                                key={fIdx}
+                                className="chat-folder-card"
                                 style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 6,
-                                  padding: "6px 12px",
-                                  background: "#ffffff",
-                                  border: "1px solid var(--color-brand-400)",
-                                  borderRadius: "var(--radius-sm)",
-                                  color: "var(--color-brand-600)",
-                                  fontSize: "0.8rem",
-                                  fontWeight: 600,
+                                  border: "1px solid var(--color-border)",
+                                  borderRadius: "var(--radius-md)",
+                                  padding: "16px 18px",
+                                  background: "var(--color-surface-hover)",
                                   boxShadow: "var(--shadow-sm)",
-                                  transition: "all var(--transition-fast)",
                                 }}
                               >
-                                <span>Open Folder in OneDrive</span>
-                                <svg
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  width="12"
-                                  height="12"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2.5"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
+                                {/* Folder Header */}
+                                <div
+                                  className="chat-folder-header"
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    flexWrap: "wrap",
+                                    gap: 10,
+                                    marginBottom: 12,
+                                  }}
                                 >
-                                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                  <polyline points="15 3 21 3 21 9" />
-                                  <line x1="10" y1="14" x2="21" y2="3" />
-                                </svg>
-                              </a>
-                            </div>
-
-                            {/* Folder Directory Notice if no separate media thumbnails */}
-                            {folder.matched_files.length === 0 && (
-                              <div
-                                style={{
-                                  fontSize: "0.78rem",
-                                  color: "var(--color-text-tertiary)",
-                                  fontStyle: "italic",
-                                  padding: "4px 2px",
-                                }}
-                              >
-                                📁 Company folder directory in OneDrive — Click &quot;Open Folder in OneDrive&quot; above to view all files.
-                              </div>
-                            )}
-
-                            {/* Child Matching Media Files */}
-                            {folder.matched_files.length > 0 && (
-                              <div
-                                style={{
-                                  display: "grid",
-                                  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                                  gap: 10,
-                                  marginTop: 8,
-                                }}
-                              >
-                                {folder.matched_files.map((file, fileIdx) => (
-                                  <div
-                                    key={fileIdx}
-                                    style={{
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 12,
-                                      padding: "10px 12px",
-                                      background: "#ffffff",
-                                      border: "1px solid var(--color-border)",
-                                      borderRadius: "var(--radius-sm)",
-                                    }}
-                                  >
-                                    {/* Thumbnail Preview */}
-                                    {file.thumbnail_url ? (
-                                      <img
-                                        src={file.thumbnail_url}
-                                        alt={file.name}
-                                        style={{
-                                          width: 44,
-                                          height: 44,
-                                          objectFit: "cover",
-                                          borderRadius: "var(--radius-sm)",
-                                          border: "1px solid var(--color-border)",
-                                          flexShrink: 0,
-                                        }}
-                                      />
-                                    ) : (
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: "1.25rem" }}>📁</span>
+                                    <div>
                                       <div
                                         style={{
-                                          width: 44,
-                                          height: 44,
-                                          borderRadius: "var(--radius-sm)",
-                                          background: "var(--color-surface-hover)",
+                                          fontSize: "0.95rem",
+                                          fontWeight: 700,
+                                          color: "var(--color-text-primary)",
                                           display: "flex",
                                           alignItems: "center",
-                                          justifyContent: "center",
-                                          fontSize: "1.2rem",
-                                          flexShrink: 0,
+                                          gap: 8,
                                         }}
                                       >
-                                        {file.record_type === "video" ? "🎬" : "🖼️"}
+                                        <span>{folder.parent_folder_name}</span>
+                                        {folder.is_personal ? (
+                                          <span
+                                            style={{
+                                              fontSize: "0.68rem",
+                                              fontWeight: 600,
+                                              color: "#7c3aed",
+                                              background: "#f5f3ff",
+                                              border: "1px solid #ddd6fe",
+                                              padding: "1px 7px",
+                                              borderRadius: 9999,
+                                            }}
+                                          >
+                                            Personal OneDrive
+                                          </span>
+                                        ) : (
+                                          <span
+                                            style={{
+                                              fontSize: "0.68rem",
+                                              fontWeight: 600,
+                                              color: "#475569",
+                                              background: "#f1f5f9",
+                                              border: "1px solid #e2e8f0",
+                                              padding: "1px 7px",
+                                              borderRadius: 9999,
+                                            }}
+                                          >
+                                            Company Shared
+                                          </span>
+                                        )}
                                       </div>
-                                    )}
-
-                                    {/* File Metadata & Link */}
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                      <a
-                                        href={file.file_web_url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
+                                      <div
                                         style={{
-                                          fontSize: "0.82rem",
-                                          fontWeight: 600,
-                                          color: "var(--color-brand-600)",
-                                          display: "block",
-                                          overflow: "hidden",
-                                          textOverflow: "ellipsis",
-                                          whiteSpace: "nowrap",
-                                        }}
-                                        title={file.name}
-                                      >
-                                        {file.name}
-                                      </a>
-                                      <span
-                                        style={{
-                                          fontSize: "0.72rem",
+                                          fontSize: "0.76rem",
                                           color: "var(--color-text-tertiary)",
-                                          display: "block",
-                                          overflow: "hidden",
-                                          textOverflow: "ellipsis",
-                                          whiteSpace: "nowrap",
+                                          fontFamily: "monospace",
                                         }}
                                       >
-                                        {file.visual_summary || file.visual_tags || file.record_type}
-                                      </span>
+                                        {folder.folder_path}
+                                      </div>
                                     </div>
-
-                                    {/* View Link Arrow */}
-                                    <a
-                                      href={file.file_web_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      title="Open direct file link"
-                                      style={{
-                                        color: "var(--color-text-tertiary)",
-                                        padding: 4,
-                                      }}
-                                    >
-                                      ↗
-                                    </a>
                                   </div>
-                                ))}
+
+                                  {/* Primary Folder Link CTA */}
+                                  <a
+                                    href={folder.folder_web_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="chat-folder-cta-btn"
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 6,
+                                      padding: "6px 12px",
+                                      background: "#ffffff",
+                                      border: "1px solid var(--color-brand-400)",
+                                      borderRadius: "var(--radius-sm)",
+                                      color: "var(--color-brand-600)",
+                                      fontSize: "0.8rem",
+                                      fontWeight: 600,
+                                      boxShadow: "var(--shadow-sm)",
+                                      transition: "all var(--transition-fast)",
+                                    }}
+                                  >
+                                    <span>Open Folder in OneDrive</span>
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      width="12"
+                                      height="12"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2.5"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    >
+                                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                                      <polyline points="15 3 21 3 21 9" />
+                                      <line x1="10" y1="14" x2="21" y2="3" />
+                                    </svg>
+                                  </a>
+                                </div>
+
+                                {/* Folder Directory Notice if no separate media thumbnails */}
+                                {folder.matched_files.length === 0 && (
+                                  <div
+                                    style={{
+                                      fontSize: "0.78rem",
+                                      color: "var(--color-text-tertiary)",
+                                      fontStyle: "italic",
+                                      padding: "4px 2px",
+                                    }}
+                                  >
+                                    📁 {folder.is_personal ? "Personal" : "Company"} folder directory in OneDrive — Click &quot;Open Folder in OneDrive&quot; above to view all files.
+                                  </div>
+                                )}
+
+                                {/* Child Matching Media Files */}
+                                {folder.matched_files.length > 0 && (
+                                  <div
+                                    className="chat-folder-media-grid"
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                                      gap: 10,
+                                      marginTop: 8,
+                                    }}
+                                  >
+                                    {folder.matched_files.map((file, fileIdx) => (
+                                      <div
+                                        key={fileIdx}
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 12,
+                                          padding: "10px 12px",
+                                          background: "#ffffff",
+                                          border: "1px solid var(--color-border)",
+                                          borderRadius: "var(--radius-sm)",
+                                        }}
+                                      >
+                                        {/* Thumbnail Preview */}
+                                        {file.thumbnail_url ? (
+                                          <img
+                                            src={file.thumbnail_url}
+                                            alt={file.name}
+                                            style={{
+                                              width: 44,
+                                              height: 44,
+                                              objectFit: "cover",
+                                              borderRadius: "var(--radius-sm)",
+                                              border: "1px solid var(--color-border)",
+                                              flexShrink: 0,
+                                            }}
+                                          />
+                                        ) : (
+                                          <div
+                                            style={{
+                                              width: 44,
+                                              height: 44,
+                                              borderRadius: "var(--radius-sm)",
+                                              background: "var(--color-surface-hover)",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              justifyContent: "center",
+                                              fontSize: "1.2rem",
+                                              flexShrink: 0,
+                                            }}
+                                          >
+                                            {file.record_type === "video" ? "🎬" : "🖼️"}
+                                          </div>
+                                        )}
+
+                                        {/* File Metadata & Link */}
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <a
+                                            href={file.file_web_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            style={{
+                                              fontSize: "0.82rem",
+                                              fontWeight: 600,
+                                              color: "var(--color-brand-600)",
+                                              display: "block",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                            title={file.name}
+                                          >
+                                            {file.name}
+                                          </a>
+                                          <span
+                                            style={{
+                                              fontSize: "0.72rem",
+                                              color: "var(--color-text-tertiary)",
+                                              display: "block",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {file.visual_summary || file.visual_tags || file.record_type}
+                                          </span>
+                                        </div>
+
+                                        {/* View Link Arrow */}
+                                        <a
+                                          href={file.file_web_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          title="Open direct file link"
+                                          style={{
+                                            color: "var(--color-text-tertiary)",
+                                            padding: 4,
+                                          }}
+                                        >
+                                          ↗
+                                        </a>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            )}
+                            ))}
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
+              ))}
+
+              {/* Loading Indicator */}
+              {isLoading && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "14px 20px",
+                    background: "#ffffff",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: "var(--radius-md)",
+                    width: "fit-content",
+                    boxShadow: "var(--shadow-sm)",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: "50%",
+                      border: "2px solid var(--color-border)",
+                      borderTopColor: "var(--color-brand-500)",
+                      animation: "spin 0.8s linear infinite",
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontSize: "0.85rem",
+                      color: "var(--color-text-secondary)",
+                    }}
+                  >
+                    Searching OneDrive metadata and verifying folder links...
+                  </span>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
             </div>
-          ))}
-
-          {/* Loading Indicator */}
-          {isLoading && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "14px 20px",
-                background: "#ffffff",
-                border: "1px solid var(--color-border)",
-                borderRadius: "var(--radius-md)",
-                width: "fit-content",
-                boxShadow: "var(--shadow-sm)",
-              }}
-            >
-              <div
-                style={{
-                  width: 16,
-                  height: 16,
-                  borderRadius: "50%",
-                  border: "2px solid var(--color-border)",
-                  borderTopColor: "var(--color-brand-500)",
-                  animation: "spin 0.8s linear infinite",
-                }}
-              />
-              <span
-                style={{
-                  fontSize: "0.85rem",
-                  color: "var(--color-text-secondary)",
-                }}
-              >
-                Searching OneDrive metadata and verifying folder links...
-              </span>
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      {/* ─── Bottom Input Bar ──────────────────────────────────────── */}
-      <footer
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: isSidebarOpen ? 290 : 0,
-          right: 0,
-          background: "linear-gradient(to top, var(--color-bg) 75%, transparent)",
-          padding: "16px 20px 24px 20px",
-          display: "flex",
-          justifyContent: "center",
-          transition: "left 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
-          zIndex: 10,
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 880,
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          {/* Drive Search Scope Toggle */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button
-              type="button"
-              onClick={() => setSearchScope("all")}
-              style={{
-                fontSize: "0.78rem",
-                padding: "3px 10px",
-                borderRadius: "9999px",
-                border: "1px solid",
-                borderColor: searchScope === "all" ? "#4f46e5" : "var(--color-border)",
-                background: searchScope === "all" ? "#eef2ff" : "rgba(255, 255, 255, 0.8)",
-                color: searchScope === "all" ? "#4f46e5" : "var(--color-text-secondary)",
-                fontWeight: searchScope === "all" ? 600 : 500,
-                cursor: "pointer",
-                transition: "all 0.15s ease",
-              }}
-            >
-              All Drives
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchScope("company")}
-              style={{
-                fontSize: "0.78rem",
-                padding: "3px 10px",
-                borderRadius: "9999px",
-                border: "1px solid",
-                borderColor: searchScope === "company" ? "#4f46e5" : "var(--color-border)",
-                background: searchScope === "company" ? "#eef2ff" : "rgba(255, 255, 255, 0.8)",
-                color: searchScope === "company" ? "#4f46e5" : "var(--color-text-secondary)",
-                fontWeight: searchScope === "company" ? 600 : 500,
-                cursor: "pointer",
-                transition: "all 0.15s ease",
-              }}
-            >
-              Company Shared
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchScope("personal")}
-              style={{
-                fontSize: "0.78rem",
-                padding: "3px 10px",
-                borderRadius: "9999px",
-                border: "1px solid",
-                borderColor: searchScope === "personal" ? "#7c3aed" : "var(--color-border)",
-                background: searchScope === "personal" ? "#f5f3ff" : "rgba(255, 255, 255, 0.8)",
-                color: searchScope === "personal" ? "#7c3aed" : "var(--color-text-secondary)",
-                fontWeight: searchScope === "personal" ? 600 : 500,
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                transition: "all 0.15s ease",
-              }}
-            >
-              <span>My Personal OneDrive</span>
-              <span style={{ fontSize: "0.68rem", opacity: 0.8, background: "#ede9fe", padding: "1px 5px", borderRadius: 4 }}>
-                {user?.email ? user.email.split("@")[0] : "Personal"}
-              </span>
-            </button>
           </div>
 
-          <div
+          {/* ─── Bottom Input Bar ──────────────────────────────────────── */}
+          <footer
+            className="chat-bottom-footer"
             style={{
-              width: "100%",
-              background: "#ffffff",
-              borderRadius: "var(--radius-lg)",
-              border: "1px solid var(--color-border)",
-              boxShadow: "0 8px 30px rgba(15, 23, 42, 0.08)",
-              padding: "8px 12px 8px 18px",
+              position: "fixed",
+              bottom: 0,
+              left: isMobile ? 0 : (isSidebarOpen ? 290 : 0),
+              right: 0,
+              background: "linear-gradient(to top, var(--color-bg) 75%, transparent)",
+              padding: "16px 20px 24px 20px",
               display: "flex",
-              alignItems: "flex-end",
-              gap: 12,
-              transition: "border-color var(--transition-fast)",
-            }}
-          >
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={autoResizeTextarea}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                searchScope === "personal"
-                  ? `Search your personal OneDrive files (${user?.email || "My Files"})...`
-                  : searchScope === "company"
-                  ? "Search company media library... e.g. 'Diwali campaign videos'"
-                  : "Search company & personal files... e.g. 'Diwali videos' or 'my documents'"
-              }
-            rows={1}
-            style={{
-              flex: 1,
-              border: "none",
-              outline: "none",
-              resize: "none",
-              background: "transparent",
-              fontSize: "0.92rem",
-              fontFamily: "inherit",
-              lineHeight: 1.5,
-              padding: "6px 0",
-              maxHeight: 140,
-              color: "var(--color-text-primary)",
-            }}
-          />
-
-          <button
-            onClick={() => handleSendMessage()}
-            disabled={!input.trim() || isLoading}
-            style={{
-              width: 38,
-              height: 38,
-              borderRadius: "var(--radius-md)",
-              background:
-                !input.trim() || isLoading
-                  ? "var(--color-surface-hover)"
-                  : "linear-gradient(135deg, #4f46e5, #6366f1)",
-              border: "none",
-              color: !input.trim() || isLoading ? "var(--color-text-tertiary)" : "#ffffff",
-              display: "flex",
-              alignItems: "center",
               justifyContent: "center",
-              cursor: !input.trim() || isLoading ? "not-allowed" : "pointer",
-              transition: "all var(--transition-fast)",
-              boxShadow:
-                !input.trim() || isLoading
-                  ? "none"
-                  : "0 2px 8px rgba(79, 70, 229, 0.3)",
-              flexShrink: 0,
+              transition: "left 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+              zIndex: 10,
             }}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 880,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
             >
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </footer>
+              {/* Drive Search Scope Toggle */}
+              <div style={{ display: "flex", gap: 6, alignItems: "center", overflowX: "auto", maxWidth: "100%", paddingBottom: 2, WebkitOverflowScrolling: "touch" }}>
+                <button
+                  type="button"
+                  onClick={() => setSearchScope("all")}
+                  style={{
+                    fontSize: "0.78rem",
+                    padding: "3px 10px",
+                    borderRadius: "9999px",
+                    border: "1px solid",
+                    borderColor: searchScope === "all" ? "#4f46e5" : "var(--color-border)",
+                    background: searchScope === "all" ? "#eef2ff" : "rgba(255, 255, 255, 0.8)",
+                    color: searchScope === "all" ? "#4f46e5" : "var(--color-text-secondary)",
+                    fontWeight: searchScope === "all" ? 600 : 500,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  All Drives
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchScope("company")}
+                  style={{
+                    fontSize: "0.78rem",
+                    padding: "3px 10px",
+                    borderRadius: "9999px",
+                    border: "1px solid",
+                    borderColor: searchScope === "company" ? "#4f46e5" : "var(--color-border)",
+                    background: searchScope === "company" ? "#eef2ff" : "rgba(255, 255, 255, 0.8)",
+                    color: searchScope === "company" ? "#4f46e5" : "var(--color-text-secondary)",
+                    fontWeight: searchScope === "company" ? 600 : 500,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  Company Shared
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchScope("personal")}
+                  style={{
+                    fontSize: "0.78rem",
+                    padding: "3px 10px",
+                    borderRadius: "9999px",
+                    border: "1px solid",
+                    borderColor: searchScope === "personal" ? "#7c3aed" : "var(--color-border)",
+                    background: searchScope === "personal" ? "#f5f3ff" : "rgba(255, 255, 255, 0.8)",
+                    color: searchScope === "personal" ? "#7c3aed" : "var(--color-text-secondary)",
+                    fontWeight: searchScope === "personal" ? 600 : 500,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  <span>My Personal OneDrive</span>
+                  <span className="chat-scope-badge-email" style={{ fontSize: "0.68rem", opacity: 0.8, background: "#ede9fe", padding: "1px 5px", borderRadius: 4 }}>
+                    {user?.email ? user.email.split("@")[0] : "Personal"}
+                  </span>
+                </button>
+              </div>
+
+              <div
+                className="chat-input-box"
+                style={{
+                  width: "100%",
+                  background: "#ffffff",
+                  borderRadius: "var(--radius-lg)",
+                  border: "1px solid var(--color-border)",
+                  boxShadow: "0 8px 30px rgba(15, 23, 42, 0.08)",
+                  padding: "8px 12px 8px 18px",
+                  display: "flex",
+                  alignItems: "flex-end",
+                  gap: 12,
+                  transition: "border-color var(--transition-fast)",
+                }}
+              >
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={autoResizeTextarea}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    searchScope === "personal"
+                      ? `Search your personal OneDrive files (${user?.email || "My Files"})...`
+                      : searchScope === "company"
+                        ? "Search company media library... e.g. 'Diwali campaign videos'"
+                        : "Search company & personal files... e.g. 'Diwali videos' or 'my documents'"
+                  }
+                  rows={1}
+                  style={{
+                    flex: 1,
+                    border: "none",
+                    outline: "none",
+                    resize: "none",
+                    background: "transparent",
+                    fontSize: "0.92rem",
+                    fontFamily: "inherit",
+                    lineHeight: 1.5,
+                    padding: "6px 0",
+                    maxHeight: 140,
+                    color: "var(--color-text-primary)",
+                  }}
+                />
+
+                <button
+                  onClick={() => handleSendMessage()}
+                  disabled={!input.trim() || isLoading}
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: "var(--radius-md)",
+                    background:
+                      !input.trim() || isLoading
+                        ? "var(--color-surface-hover)"
+                        : "linear-gradient(135deg, #4f46e5, #6366f1)",
+                    border: "none",
+                    color: !input.trim() || isLoading ? "var(--color-text-tertiary)" : "#ffffff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: !input.trim() || isLoading ? "not-allowed" : "pointer",
+                    transition: "all var(--transition-fast)",
+                    boxShadow:
+                      !input.trim() || isLoading
+                        ? "none"
+                        : "0 2px 8px rgba(79, 70, 229, 0.3)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </footer>
         </div>
       </div>
 
@@ -1697,6 +2047,7 @@ export default function ChatUI({ user }: ChatUIProps) {
         >
           <div
             id="profile-modal-card"
+            className="profile-modal-card"
             style={{
               background: "#ffffff",
               borderRadius: 16,
@@ -1779,7 +2130,7 @@ export default function ChatUI({ user }: ChatUIProps) {
             </div>
 
             {/* Modal Content */}
-            <div style={{ padding: "24px" }}>
+            <div style={{ padding: "24px", maxHeight: "calc(90vh - 80px)", overflowY: "auto" }}>
               {/* User Identity Card */}
               <div
                 style={{
@@ -1867,6 +2218,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
               {/* Corporate Details Grid */}
               <div
+                className="profile-details-grid"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
@@ -2161,7 +2513,11 @@ function MarkdownRenderer({ content }: { content: string }) {
 
   return (
     <div
-      style={{ lineHeight: 1.7 }}
+      style={{
+        lineHeight: 1.7,
+        wordBreak: "break-word",
+        overflowWrap: "anywhere",
+      }}
       dangerouslySetInnerHTML={{ __html: formattedHtml }}
     />
   );

@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "22": "^0.0.0",
     "@auth/core": "^0.41.3",
     "@google/genai": "^2.30.0",
     "@supabase/ssr": "^0.12.7",

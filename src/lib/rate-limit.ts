@@ -77,15 +77,39 @@ export function checkRateLimit(key: string, options: RateLimitOptions): RateLimi
 
 /**
  * Extracts the client's IP address from incoming Next.js Request headers.
+ * Prefers trusted edge platform headers (Cloudflare, Vercel, x-real-ip)
+ * or the right-most entry of x-forwarded-for added by the closest trusted proxy,
+ * preventing spoofing via client-crafted headers.
  */
 export function getClientIp(req: Request): string {
+  // 1. Hosting platform edge headers (cannot be forged by the client)
+  const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
+  const vercelForwardedFor = req.headers.get("x-vercel-forwarded-for")?.trim();
+  if (vercelForwardedFor) {
+    const parts = vercelForwardedFor.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
+  }
+
+  const realIp = req.headers.get("x-real-ip")?.trim();
+  if (realIp) {
+    return realIp;
+  }
+
+  // 2. Fall back to right-most x-forwarded-for entry appended by trusted proxy
   const forwardedFor = req.headers.get("x-forwarded-for");
   if (forwardedFor) {
-    return forwardedFor.split(",")[0].trim();
+    const parts = forwardedFor.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
   }
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) {
-    return realIp.trim();
-  }
+
   return "127.0.0.1";
 }
+

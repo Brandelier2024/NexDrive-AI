@@ -5,7 +5,6 @@ import {
   getEmbedding,
   generateDeterministicVector,
 } from "@/lib/retrieval/embeddings";
-import { MOCK_ONEDRIVE_ITEMS } from "./mock-data";
 import { crawlOneDriveDelta } from "./onedrive-crawler";
 import { isAzureConfigured } from "@/lib/graph/auth";
 import { isGeminiConfigured } from "./vision-describer";
@@ -31,10 +30,7 @@ export async function getAllIndexedRecords(): Promise<OneDriveRecord[]> {
     console.warn("[Indexer] Supabase read failed, checking in-memory cache:", err);
   }
 
-  // Fallback to in-memory store (or initialize with mock data if empty)
-  if (inMemoryStore.length === 0) {
-    await seedMockData();
-  }
+  // Fallback to in-memory store
   return inMemoryStore;
 }
 
@@ -152,40 +148,24 @@ export async function deleteOneDriveRecords(itemIds: string[]): Promise<number> 
 }
 
 /**
- * Seeds realistic mock OneDrive assets for testing
- */
-export async function seedMockData(): Promise<SyncResult> {
-  const startTime = Date.now();
-  const count = await upsertOneDriveRecords(MOCK_ONEDRIVE_ITEMS);
-
-  const folders = MOCK_ONEDRIVE_ITEMS.filter((r) => r.record_type === "folder").length;
-  const media = MOCK_ONEDRIVE_ITEMS.filter((r) => r.record_type !== "folder").length;
-
-  return {
-    success: true,
-    mode: "demo_mock",
-    items_processed: count,
-    folders_indexed: folders,
-    media_indexed: media,
-    deleted_count: 0,
-    duration_ms: Date.now() - startTime,
-  };
-}
-
-/**
- * Orchestrates full or incremental sync.
- * If Azure AD is configured, performs live Graph API delta crawl (strictly incremental add-ons once indexed).
- * Otherwise, indexes mock demonstration assets.
+ * Orchestrates full or incremental sync using live Microsoft Graph API.
+ * Performs incremental delta crawl (strictly add-ons once indexed).
  */
 export async function syncOneDrive(): Promise<SyncResult> {
   const startTime = Date.now();
 
   if (!isAzureConfigured()) {
-    console.log("[Sync] Live Azure credentials not configured. Running in Demo / Mock Seed mode.");
-    return seedMockData();
-  }
-
-  try {
+    return {
+      success: false,
+      mode: "live",
+      items_processed: 0,
+      folders_indexed: 0,
+      media_indexed: 0,
+      deleted_count: 0,
+      duration_ms: Date.now() - startTime,
+      error: "Microsoft Azure credentials are not configured.",
+    };
+  }  try {
     // 1. Fetch previous deltaLink from Supabase sync_state
     let previousDeltaLink: string | null = null;
     let initialIndexDone = false;

@@ -23,7 +23,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       issuer: `https://login.microsoftonline.com/${config.azure.tenantId}/v2.0`,
       authorization: {
         params: {
-          scope: "openid profile email User.Read Files.Read offline_access",
+          scope: "openid profile email User.Read",
         },
       },
     }),
@@ -126,9 +126,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (session.user && token.id) {
         session.user.id = token.id as string;
-      }
-      if (token.accessToken) {
-        Object.assign(session, { accessToken: token.accessToken });
       }
       return session;
     },

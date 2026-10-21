@@ -151,10 +151,8 @@ ALTER TABLE IF EXISTS users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS email_verifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS sync_state ENABLE ROW LEVEL SECURITY;
 
--- onedrive_items: Read-only for clients, strictly no client delete/insert
+-- onedrive_items: Access restricted to server-side service_role (search & crawler)
 DROP POLICY IF EXISTS "Public and authenticated users can search onedrive items" ON onedrive_items;
-CREATE POLICY "Public and authenticated users can search onedrive items"
-  ON onedrive_items FOR SELECT TO anon, authenticated USING (true);
 
 -- chat_messages: Users can only read and delete their own messages
 DROP POLICY IF EXISTS "Users can only read their own chat history" ON chat_messages;
@@ -170,9 +168,7 @@ DROP POLICY IF EXISTS "Users can read own profile" ON users;
 CREATE POLICY "Users can read own profile"
   ON users FOR SELECT TO authenticated USING (auth.uid() = id);
 
--- sync_state: Read-only status display
+-- sync_state: Access restricted to server-side service_role (sync runner, delta_link protected)
 DROP POLICY IF EXISTS "Anyone can view sync status" ON sync_state;
-CREATE POLICY "Anyone can view sync status"
-  ON sync_state FOR SELECT TO anon, authenticated USING (true);
 
 

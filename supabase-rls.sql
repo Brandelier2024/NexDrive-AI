@@ -17,19 +17,16 @@ ALTER TABLE IF EXISTS sync_state ENABLE ROW LEVEL SECURITY;
 -- ────────────────────────────────────────────────────────────
 -- 2. onedrive_items Policies
 -- Security Goal: 
---   - Allow search queries (SELECT) for authenticated employees & anon
---   - STRICTLY PREVENT any DELETE, UPDATE, or INSERT from the public anon key.
---   - Only backend server (service_role) can insert/update/delete records during sync/crawl.
+--   - Strict zero-access for anon and authenticated clients.
+--   - All vector search, keyword search, and indexing operations are performed
+--     server-side using the service_role key.
+--   - Direct client access (SELECT/INSERT/UPDATE/DELETE) via anon key is blocked.
 -- ────────────────────────────────────────────────────────────
 DROP POLICY IF EXISTS "Public and authenticated users can search onedrive items" ON onedrive_items;
-CREATE POLICY "Public and authenticated users can search onedrive items"
-  ON onedrive_items
-  FOR SELECT
-  TO anon, authenticated
-  USING (true);
 
--- No INSERT / UPDATE / DELETE policies are granted to anon or authenticated.
--- Supabase will automatically BLOCK any client-side deletion or tampering.
+-- With RLS enabled and no policies granted to anon or authenticated,
+-- public REST requests are completely blocked from querying or modifying onedrive items.
+-- Only server-side service-role access remains.
 
 
 -- ────────────────────────────────────────────────────────────
@@ -82,15 +79,15 @@ CREATE POLICY "Users can read own profile"
 -- ────────────────────────────────────────────────────────────
 -- 6. sync_state Policies
 -- Security Goal:
---   - Read-only access to view last synchronization time and status.
---   - Only backend sync runner can mutate the delta link or sync timestamps.
+--   - Strict zero-access for anon and authenticated clients.
+--   - Prevents exposure of sensitive delta_link tokens to unauthenticated clients.
+--   - Only backend server (service_role) reads and updates sync state.
 -- ────────────────────────────────────────────────────────────
 DROP POLICY IF EXISTS "Anyone can view sync status" ON sync_state;
-CREATE POLICY "Anyone can view sync status"
-  ON sync_state
-  FOR SELECT
-  TO anon, authenticated
-  USING (true);
+
+-- With RLS enabled and no policies granted to anon or authenticated,
+-- public REST requests cannot access sync_state or leak delta_link.
+-- Only server-side service-role access remains.
 
 -- ────────────────────────────────────────────────────────────
 -- Verification Query

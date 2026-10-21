@@ -59,19 +59,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Validate password strength
+    if (password.length < 8) {
+      return NextResponse.json(
+        { error: "Password must be at least 8 characters long." },
+        { status: 400 }
+      );
+    }
+
     // Verify 6-digit email OTP code
     const isValidOtp = await verifyOtp(normalizedEmail, otp_code);
     if (!isValidOtp) {
       return NextResponse.json(
         { error: "Invalid or expired verification code. Please check your email or request a new code." },
-        { status: 400 }
-      );
-    }
-
-    // Validate password strength
-    if (password.length < 8) {
-      return NextResponse.json(
-        { error: "Password must be at least 8 characters long." },
         { status: 400 }
       );
     }

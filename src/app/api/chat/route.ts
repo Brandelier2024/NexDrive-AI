@@ -23,6 +23,13 @@ export async function POST(req: Request) {
       );
     }
 
+    if (scope !== "all" && scope !== "company" && scope !== "personal") {
+      return NextResponse.json(
+        { error: "Invalid scope. Allowed values are 'all', 'company', or 'personal'." },
+        { status: 400 }
+      );
+    }
+
     const trimmedMessage = message.trim();
     const userEmail = session.user.email?.toLowerCase().trim();
 
@@ -40,7 +47,11 @@ export async function POST(req: Request) {
 
     // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
     if ((scope === "all" || scope === "personal") && userEmail) {
-      personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
+      try {
+        personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
+      } catch (personalError) {
+        console.error("[Chat API] Failed to search personal OneDrive:", personalError);
+      }
     }
 
     // Combine retrieved records (personal records first so user sees their own assets prominently)

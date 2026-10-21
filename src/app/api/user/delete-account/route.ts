@@ -36,7 +36,11 @@ export async function DELETE() {
       .eq("user_id", canonicalUserId);
 
     if (chatDeleteError) {
-      console.warn("[Delete Account] Warning: error deleting chat_messages:", chatDeleteError);
+      console.error("[Delete Account] Error deleting chat_messages:", chatDeleteError);
+      return NextResponse.json(
+        { error: "Failed to delete account data. Please try again." },
+        { status: 500 }
+      );
     }
 
     // 3. Delete user from 'users' table and confirm deleted records
