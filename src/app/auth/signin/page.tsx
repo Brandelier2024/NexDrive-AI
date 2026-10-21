@@ -62,7 +62,7 @@ function SignInContent() {
 
   const handleAzureSSO = async () => {
     setSsoLoading(true);
-    await signIn("azure-ad", { callbackUrl });
+    await signIn("microsoft-entra-id", { callbackUrl });
   };
 
   return (

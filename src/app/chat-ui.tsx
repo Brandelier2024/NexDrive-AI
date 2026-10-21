@@ -2270,7 +2270,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                     Authentication
                   </span>
                   <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
-                    {profileData?.auth_provider === "azure-ad" ? "Microsoft SSO" : "Email OTP Verified"}
+                    {profileData?.auth_provider === "azure-ad" || profileData?.auth_provider === "microsoft-entra-id" ? "Microsoft SSO" : "Email OTP Verified"}
                   </span>
                 </div>
 
