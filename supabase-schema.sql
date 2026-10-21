@@ -143,6 +143,119 @@ AS $$
 $$;
 
 -- ────────────────────────────────────────────────
+-- 5b. Chat Session Summaries Function (Phase 4)
+-- ────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION get_chat_session_summaries(
+  p_user_id UUID,
+  p_session_ids TEXT[] DEFAULT NULL
+)
+RETURNS TABLE (
+  session_id TEXT,
+  title TEXT,
+  last_message TEXT,
+  last_timestamp TIMESTAMPTZ,
+  message_count BIGINT
+)
+LANGUAGE sql STABLE
+AS $$
+  WITH ranked_messages AS (
+    SELECT
+      id,
+      user_id,
+      session_id,
+      role,
+      content,
+      created_at,
+      ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC) AS rn_desc,
+      ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY CASE WHEN role = 'user' THEN 0 ELSE 1 END, created_at ASC) AS rn_title,
+      COUNT(*) OVER (PARTITION BY session_id) AS total_count
+    FROM chat_messages
+    WHERE user_id = p_user_id
+      AND (p_session_ids IS NULL OR session_id = ANY(p_session_ids))
+  )
+  SELECT
+    latest.session_id,
+    COALESCE(first_user.content, 'New Conversation') AS title,
+    latest.content AS last_message,
+    latest.created_at AS last_timestamp,
+    latest.total_count AS message_count
+  FROM (SELECT * FROM ranked_messages WHERE rn_desc = 1) latest
+  LEFT JOIN (SELECT * FROM ranked_messages WHERE rn_title = 1) first_user
+    ON latest.session_id = first_user.session_id;
+$$;
+
+-- ────────────────────────────────────────────────
+-- 5c. User Chat Sessions Aggregation Function (Phase 4)
+-- ────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION get_user_chat_sessions(
+  p_user_id UUID,
+  p_limit INT DEFAULT 50,
+  p_offset INT DEFAULT 0
+)
+RETURNS TABLE (
+  session_id TEXT,
+  title TEXT,
+  last_message TEXT,
+  last_timestamp TIMESTAMPTZ,
+  message_count BIGINT,
+  total_sessions BIGINT,
+  active_session_id TEXT
+)
+LANGUAGE sql STABLE
+AS $$
+  WITH session_stats AS (
+    SELECT
+      m.session_id,
+      MAX(m.created_at) AS last_timestamp,
+      COUNT(*) AS message_count
+    FROM chat_messages m
+    WHERE m.user_id = p_user_id
+    GROUP BY m.session_id
+  ),
+  total_count AS (
+    SELECT COUNT(*) AS total FROM session_stats
+  ),
+  global_active AS (
+    SELECT s.session_id AS active_id
+    FROM session_stats s
+    ORDER BY s.last_timestamp DESC
+    LIMIT 1
+  ),
+  paged_sessions AS (
+    SELECT s.session_id, s.last_timestamp, s.message_count
+    FROM session_stats s
+    ORDER BY s.last_timestamp DESC
+    LIMIT p_limit OFFSET p_offset
+  ),
+  ranked_messages AS (
+    SELECT
+      m.session_id,
+      m.role,
+      m.content,
+      m.created_at,
+      ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY m.created_at DESC) AS rn_desc,
+      ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY CASE WHEN m.role = 'user' THEN 0 ELSE 1 END, m.created_at ASC) AS rn_title
+    FROM chat_messages m
+    INNER JOIN paged_sessions ps ON m.session_id = ps.session_id
+    WHERE m.user_id = p_user_id
+  )
+  SELECT
+    ps.session_id,
+    COALESCE(first_user.content, 'New Conversation') AS title,
+    COALESCE(latest.content, '') AS last_message,
+    ps.last_timestamp,
+    ps.message_count,
+    COALESCE((SELECT total FROM total_count), 0)::BIGINT AS total_sessions,
+    (SELECT active_id FROM global_active) AS active_session_id
+  FROM paged_sessions ps
+  LEFT JOIN (SELECT session_id, content FROM ranked_messages WHERE rn_desc = 1) latest
+    ON ps.session_id = latest.session_id
+  LEFT JOIN (SELECT session_id, content FROM ranked_messages WHERE rn_title = 1) first_user
+    ON ps.session_id = first_user.session_id
+  ORDER BY ps.last_timestamp DESC;
+$$;
+
+-- ────────────────────────────────────────────────
 -- 6. Row Level Security (RLS) Policies
 -- ────────────────────────────────────────────────
 ALTER TABLE IF EXISTS onedrive_items ENABLE ROW LEVEL SECURITY;

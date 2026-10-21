@@ -54,109 +54,230 @@ export async function GET(req: Request) {
       });
     }
 
-    // Fetch session identifiers and timestamps to discover all sessions without heavy payloads
-    const { data: sessionEntries, error: sessionsError } = await supabase
-      .from("chat_messages")
-      .select("session_id, created_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    // Type for session summary items
+    type SessionSummaryItem = {
+      id: string;
+      title: string;
+      lastMessage: string;
+      lastTimestamp: string;
+      messageCount: number;
+    };
 
-    if (sessionsError) {
-      console.error("[Chat History] Error fetching sessions:", sessionsError);
-      return NextResponse.json({ error: "Failed to fetch chat history" }, { status: 500 });
-    }
+    // Attempt database-level session aggregation with pagination and exact total
+    let aggregatedSessions: Array<{
+      session_id: string;
+      title?: string;
+      last_message?: string;
+      last_timestamp: string;
+      message_count: number | string;
+      total_sessions?: number | string;
+      active_session_id?: string;
+    }> | null = null;
 
-    if (!sessionEntries || sessionEntries.length === 0) {
-      return NextResponse.json({
-        sessions: [],
-        messages: [],
-        activeSessionId: `session-${Date.now()}`,
-        total: 0,
-        hasMore: false,
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc("get_user_chat_sessions", {
+        p_user_id: userId,
+        p_limit: limit,
+        p_offset: offset,
       });
+
+      if (!rpcError && Array.isArray(rpcData)) {
+        aggregatedSessions = rpcData;
+      }
+    } catch {
+      aggregatedSessions = null;
     }
 
-    // Discover unique session IDs ordered by latest activity
     const sessionOrder: string[] = [];
     const sessionLastTimestamp = new Map<string, string>();
     const sessionMessageCounts = new Map<string, number>();
+    const sessionsMap = new Map<string, SessionSummaryItem>();
+    let totalSessions = 0;
+    let pagedSessionIds: string[] = [];
+    let mostRecentSessionId = `session-${Date.now()}`;
 
-    for (const entry of sessionEntries) {
-      const sId = entry.session_id || "default";
-      if (!sessionLastTimestamp.has(sId)) {
+    if (aggregatedSessions) {
+      if (aggregatedSessions.length === 0 && offset === 0) {
+        return NextResponse.json({
+          sessions: [],
+          messages: [],
+          activeSessionId: `session-${Date.now()}`,
+          total: 0,
+          hasMore: false,
+        });
+      }
+
+      totalSessions =
+        aggregatedSessions.length > 0 ? Number(aggregatedSessions[0].total_sessions) || 0 : 0;
+      mostRecentSessionId =
+        aggregatedSessions[0]?.active_session_id ||
+        aggregatedSessions[0]?.session_id ||
+        `session-${Date.now()}`;
+
+      for (const item of aggregatedSessions) {
+        const sId = item.session_id || "default";
         sessionOrder.push(sId);
-        sessionLastTimestamp.set(sId, entry.created_at);
-        sessionMessageCounts.set(sId, 1);
-      } else {
-        sessionMessageCounts.set(sId, (sessionMessageCounts.get(sId) || 0) + 1);
+        sessionLastTimestamp.set(sId, item.last_timestamp);
+        const count = Number(item.message_count) || 1;
+        sessionMessageCounts.set(sId, count);
+
+        sessionsMap.set(sId, {
+          id: sId,
+          title: item.title || "New Conversation",
+          lastMessage: item.last_message || "",
+          lastTimestamp: item.last_timestamp,
+          messageCount: count,
+        });
+      }
+
+      pagedSessionIds = sessionOrder;
+    } else {
+      // Fallback: Fetch session entries if RPC is not available in database
+      const { data: sessionEntries, error: sessionsError } = await supabase
+        .from("chat_messages")
+        .select("session_id, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      if (sessionsError) {
+        console.error("[Chat History] Error fetching sessions:", sessionsError);
+        return NextResponse.json({ error: "Failed to fetch chat history" }, { status: 500 });
+      }
+
+      if (!sessionEntries || sessionEntries.length === 0) {
+        return NextResponse.json({
+          sessions: [],
+          messages: [],
+          activeSessionId: `session-${Date.now()}`,
+          total: 0,
+          hasMore: false,
+        });
+      }
+
+      for (const entry of sessionEntries) {
+        const sId = entry.session_id || "default";
+        if (!sessionLastTimestamp.has(sId)) {
+          sessionOrder.push(sId);
+          sessionLastTimestamp.set(sId, entry.created_at);
+          sessionMessageCounts.set(sId, 1);
+        } else {
+          sessionMessageCounts.set(sId, (sessionMessageCounts.get(sId) || 0) + 1);
+        }
+      }
+
+      totalSessions = sessionOrder.length;
+      pagedSessionIds = sessionOrder.slice(offset, offset + limit);
+      mostRecentSessionId = sessionOrder[0] || `session-${Date.now()}`;
+
+      for (const sId of pagedSessionIds) {
+        sessionsMap.set(sId, {
+          id: sId,
+          title: "New Conversation",
+          lastMessage: "",
+          lastTimestamp: sessionLastTimestamp.get(sId) || new Date().toISOString(),
+          messageCount: sessionMessageCounts.get(sId) || 1,
+        });
+      }
+
+      // Populate fallback session summaries for paged sessions
+      // 1. Fetch latest messages per session (ordered descending so first row per session is the latest)
+      const { data: latestMessages } = await supabase
+        .from("chat_messages")
+        .select("session_id, content, created_at")
+        .eq("user_id", userId)
+        .in("session_id", pagedSessionIds)
+        .order("created_at", { ascending: false });
+
+      for (const msg of latestMessages || []) {
+        const sId = msg.session_id || "default";
+        const s = sessionsMap.get(sId);
+        if (s && !s.lastMessage) {
+          s.lastMessage = msg.content;
+        }
+      }
+
+      // 2. Fetch first user messages for conversation titles (ordered ascending so first row per session is the initial user message)
+      const { data: firstUserMessages } = await supabase
+        .from("chat_messages")
+        .select("session_id, content, created_at")
+        .eq("user_id", userId)
+        .eq("role", "user")
+        .in("session_id", pagedSessionIds)
+        .order("created_at", { ascending: true });
+
+      for (const msg of firstUserMessages || []) {
+        const sId = msg.session_id || "default";
+        const s = sessionsMap.get(sId);
+        if (s && s.title === "New Conversation") {
+          s.title = msg.content;
+        }
+      }
+
+      // 3. Address any sessions whose messages were truncated by PostgREST row limits
+      const missingSessions = pagedSessionIds.filter((id) => {
+        const s = sessionsMap.get(id);
+        return s && (!s.lastMessage || s.title === "New Conversation");
+      });
+
+      if (missingSessions.length > 0 && missingSessions.length <= 20) {
+        await Promise.all(
+          missingSessions.map(async (sId) => {
+            const s = sessionsMap.get(sId);
+            if (!s) return;
+            if (!s.lastMessage) {
+              const { data: lastOne } = await supabase
+                .from("chat_messages")
+                .select("content")
+                .eq("user_id", userId)
+                .eq("session_id", sId)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (lastOne?.content) s.lastMessage = lastOne.content;
+            }
+            if (s.title === "New Conversation") {
+              const { data: firstOne } = await supabase
+                .from("chat_messages")
+                .select("content")
+                .eq("user_id", userId)
+                .eq("session_id", sId)
+                .eq("role", "user")
+                .order("created_at", { ascending: true })
+                .limit(1)
+                .maybeSingle();
+              if (firstOne?.content) s.title = firstOne.content;
+            }
+          })
+        );
+      }
+
+      // Ensure fallback values are populated if only one of title/lastMessage exists
+      for (const s of sessionsMap.values()) {
+        if (!s.lastMessage && s.title !== "New Conversation") {
+          s.lastMessage = s.title;
+        }
+        if (s.title === "New Conversation" && s.lastMessage) {
+          s.title = s.lastMessage;
+        }
       }
     }
 
-    const totalSessions = sessionOrder.length;
-    // Paginate by sessions so limiting recent messages cannot hide older sessions
-    const pagedSessionIds = sessionOrder.slice(offset, offset + limit);
     const hasMore = offset + limit < totalSessions;
 
     if (pagedSessionIds.length === 0) {
       return NextResponse.json({
         sessions: [],
         messages: [],
-        activeSessionId: sessionOrder[0] || `session-${Date.now()}`,
+        activeSessionId: mostRecentSessionId,
         total: totalSessions,
         hasMore,
       });
-    }
-
-    // Fetch summaries for only the paged sessions
-    const { data: pagedMessages, error: pagedError } = await supabase
-      .from("chat_messages")
-      .select("session_id, role, content, created_at")
-      .eq("user_id", userId)
-      .in("session_id", pagedSessionIds)
-      .order("created_at", { ascending: true });
-
-    if (pagedError) {
-      console.error("[Chat History] Error fetching paged session messages:", pagedError);
-      return NextResponse.json({ error: "Failed to fetch session messages" }, { status: 500 });
-    }
-
-    const sessionsMap = new Map<
-      string,
-      {
-        id: string;
-        title: string;
-        lastMessage: string;
-        lastTimestamp: string;
-        messageCount: number;
-      }
-    >();
-
-    for (const msg of pagedMessages || []) {
-      const sId = msg.session_id || "default";
-      if (!sessionsMap.has(sId)) {
-        sessionsMap.set(sId, {
-          id: sId,
-          title: msg.role === "user" ? msg.content : "New Conversation",
-          lastMessage: msg.content,
-          lastTimestamp: sessionLastTimestamp.get(sId) || msg.created_at,
-          messageCount: sessionMessageCounts.get(sId) || 1,
-        });
-      } else {
-        const s = sessionsMap.get(sId)!;
-        s.lastMessage = msg.content;
-        if (s.title === "New Conversation" && msg.role === "user") {
-          s.title = msg.content;
-        }
-      }
     }
 
     // Sort paged sessions according to latest activity
     const sessionsList = pagedSessionIds
       .map((id) => sessionsMap.get(id))
       .filter((s): s is NonNullable<typeof s> => Boolean(s));
-
-    // Active session is the most recent session
-    const mostRecentSessionId = sessionOrder[0] || `session-${Date.now()}`;
 
     // Separately load full message records (including folder_cards) only for the active session on first page
     let activeMessages: Array<Record<string, unknown>> = [];
