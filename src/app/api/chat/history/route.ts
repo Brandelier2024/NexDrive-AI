@@ -11,6 +11,8 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url);
     const requestedSessionId = searchParams.get("sessionId");
+    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "50", 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(searchParams.get("offset") || "0", 10) || 0, 0);
 
     const supabase = createServerSupabaseClient();
     let userId: string | null = null;
@@ -52,28 +54,72 @@ export async function GET(req: Request) {
       });
     }
 
-    // Otherwise, fetch recent messages (without heavy folder_cards) to compile session summaries
-    const { data: recentMessages, error } = await supabase
+    // Fetch session identifiers and timestamps to discover all sessions without heavy payloads
+    const { data: sessionEntries, error: sessionsError } = await supabase
       .from("chat_messages")
-      .select("session_id, role, content, created_at")
+      .select("session_id, created_at")
       .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(500);
+      .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error("[Chat History] Error fetching history:", error);
+    if (sessionsError) {
+      console.error("[Chat History] Error fetching sessions:", sessionsError);
       return NextResponse.json({ error: "Failed to fetch chat history" }, { status: 500 });
     }
 
-    if (!recentMessages || recentMessages.length === 0) {
+    if (!sessionEntries || sessionEntries.length === 0) {
       return NextResponse.json({
         sessions: [],
         messages: [],
         activeSessionId: `session-${Date.now()}`,
+        total: 0,
+        hasMore: false,
       });
     }
 
-    // Group messages by session_id in chronological order so the first user message becomes the title
+    // Discover unique session IDs ordered by latest activity
+    const sessionOrder: string[] = [];
+    const sessionLastTimestamp = new Map<string, string>();
+    const sessionMessageCounts = new Map<string, number>();
+
+    for (const entry of sessionEntries) {
+      const sId = entry.session_id || "default";
+      if (!sessionLastTimestamp.has(sId)) {
+        sessionOrder.push(sId);
+        sessionLastTimestamp.set(sId, entry.created_at);
+        sessionMessageCounts.set(sId, 1);
+      } else {
+        sessionMessageCounts.set(sId, (sessionMessageCounts.get(sId) || 0) + 1);
+      }
+    }
+
+    const totalSessions = sessionOrder.length;
+    // Paginate by sessions so limiting recent messages cannot hide older sessions
+    const pagedSessionIds = sessionOrder.slice(offset, offset + limit);
+    const hasMore = offset + limit < totalSessions;
+
+    if (pagedSessionIds.length === 0) {
+      return NextResponse.json({
+        sessions: [],
+        messages: [],
+        activeSessionId: sessionOrder[0] || `session-${Date.now()}`,
+        total: totalSessions,
+        hasMore,
+      });
+    }
+
+    // Fetch summaries for only the paged sessions
+    const { data: pagedMessages, error: pagedError } = await supabase
+      .from("chat_messages")
+      .select("session_id, role, content, created_at")
+      .eq("user_id", userId)
+      .in("session_id", pagedSessionIds)
+      .order("created_at", { ascending: true });
+
+    if (pagedError) {
+      console.error("[Chat History] Error fetching paged session messages:", pagedError);
+      return NextResponse.json({ error: "Failed to fetch session messages" }, { status: 500 });
+    }
+
     const sessionsMap = new Map<
       string,
       {
@@ -85,39 +131,36 @@ export async function GET(req: Request) {
       }
     >();
 
-    const chronological = [...recentMessages].reverse();
-    for (const msg of chronological) {
+    for (const msg of pagedMessages || []) {
       const sId = msg.session_id || "default";
       if (!sessionsMap.has(sId)) {
         sessionsMap.set(sId, {
           id: sId,
           title: msg.role === "user" ? msg.content : "New Conversation",
           lastMessage: msg.content,
-          lastTimestamp: msg.created_at,
-          messageCount: 1,
+          lastTimestamp: sessionLastTimestamp.get(sId) || msg.created_at,
+          messageCount: sessionMessageCounts.get(sId) || 1,
         });
       } else {
         const s = sessionsMap.get(sId)!;
         s.lastMessage = msg.content;
-        s.lastTimestamp = msg.created_at;
-        s.messageCount += 1;
-        // Keep first user message as title if available
         if (s.title === "New Conversation" && msg.role === "user") {
           s.title = msg.content;
         }
       }
     }
 
-    // Sort sessions by most recent timestamp descending
-    const sessionsList = Array.from(sessionsMap.values())
-      .sort((a, b) => new Date(b.lastTimestamp).getTime() - new Date(a.lastTimestamp).getTime());
+    // Sort paged sessions according to latest activity
+    const sessionsList = pagedSessionIds
+      .map((id) => sessionsMap.get(id))
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
 
     // Active session is the most recent session
-    const mostRecentSessionId = sessionsList[0]?.id || `session-${Date.now()}`;
+    const mostRecentSessionId = sessionOrder[0] || `session-${Date.now()}`;
 
-    // Separately load full message records (including folder_cards) only for the active session
+    // Separately load full message records (including folder_cards) only for the active session on first page
     let activeMessages: Array<Record<string, unknown>> = [];
-    if (sessionsList.length > 0) {
+    if (sessionsList.length > 0 && offset === 0) {
       const { data: messages, error: activeError } = await supabase
         .from("chat_messages")
         .select("id, role, content, folder_cards, created_at, session_id")
@@ -137,6 +180,8 @@ export async function GET(req: Request) {
       sessions: sessionsList,
       activeSessionId: mostRecentSessionId,
       messages: activeMessages,
+      total: totalSessions,
+      hasMore,
     });
   } catch (error: unknown) {
     console.error("[Chat History Error]:", error);

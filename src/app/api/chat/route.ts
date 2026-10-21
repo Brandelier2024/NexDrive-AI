@@ -46,11 +46,24 @@ export async function POST(req: Request) {
     }
 
     // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
+    if (scope === "personal" && !userEmail) {
+      return NextResponse.json(
+        { error: "User email is required for personal OneDrive searches." },
+        { status: 400 }
+      );
+    }
+
     if ((scope === "all" || scope === "personal") && userEmail) {
       try {
         personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
       } catch (personalError) {
         console.error("[Chat API] Failed to search personal OneDrive:", personalError);
+        if (scope === "personal") {
+          return NextResponse.json(
+            { error: "Failed to search personal OneDrive. Please verify your Microsoft 365 connection or try again later." },
+            { status: 502 }
+          );
+        }
       }
     }
 

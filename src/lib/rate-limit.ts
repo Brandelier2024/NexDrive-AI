@@ -82,12 +82,7 @@ export function checkRateLimit(key: string, options: RateLimitOptions): RateLimi
  * preventing spoofing via client-crafted headers.
  */
 export function getClientIp(req: Request): string {
-  // 1. Hosting platform edge headers (cannot be forged by the client)
-  const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
-  if (cfConnectingIp) {
-    return cfConnectingIp;
-  }
-
+  // 1. Prefer trusted Vercel deployment-specific edge header (cannot be forged on Vercel)
   const vercelForwardedFor = req.headers.get("x-vercel-forwarded-for")?.trim();
   if (vercelForwardedFor) {
     const parts = vercelForwardedFor.split(",").map((p) => p.trim()).filter(Boolean);
@@ -96,12 +91,20 @@ export function getClientIp(req: Request): string {
     }
   }
 
+  // 2. Trust Cloudflare cf-connecting-ip only when verified to arrive via Cloudflare ingress (cf-ray present)
+  const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
+  const cfRay = req.headers.get("cf-ray")?.trim();
+  const isCloudflareIngress = Boolean(cfRay) || process.env.TRUST_CLOUDFLARE === "true";
+  if (cfConnectingIp && isCloudflareIngress) {
+    return cfConnectingIp;
+  }
+
   const realIp = req.headers.get("x-real-ip")?.trim();
   if (realIp) {
     return realIp;
   }
 
-  // 2. Fall back to right-most x-forwarded-for entry appended by trusted proxy
+  // 3. Fall back to right-most x-forwarded-for entry appended by trusted proxy
   const forwardedFor = req.headers.get("x-forwarded-for");
   if (forwardedFor) {
     const parts = forwardedFor.split(",").map((p) => p.trim()).filter(Boolean);

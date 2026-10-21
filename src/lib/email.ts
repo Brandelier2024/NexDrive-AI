@@ -10,6 +10,7 @@ interface OtpEntry {
   attempts: number;
 }
 const otpStore = new Map<string, OtpEntry>();
+const supabaseAuthoritativeEmails = new Set<string>();
 
 /**
  * Constant-time string comparison with safe buffer length handling
@@ -38,11 +39,13 @@ function getSupabaseClient(): ReturnType<typeof createServerSupabaseClient> | nu
  * Deletes an OTP entry from both the in-memory map and Supabase table
  */
 async function deleteOtp(email: string): Promise<void> {
-  otpStore.delete(email);
+  const normalizedEmail = email.toLowerCase().trim();
+  otpStore.delete(normalizedEmail);
+  supabaseAuthoritativeEmails.delete(normalizedEmail);
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      await supabase.from("email_verifications").delete().eq("email", email);
+      await supabase.from("email_verifications").delete().eq("email", normalizedEmail);
     } catch {
       // In-memory fallback if Supabase is unavailable
     }
@@ -63,11 +66,7 @@ export async function storeOtp(email: string, code: string): Promise<void> {
   const normalizedEmail = email.toLowerCase().trim();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  // 1. Always record in the in-memory OTP store so the code is never lost
-  // even if Supabase table is not yet migrated or PostgREST schema cache is stale
-  otpStore.set(normalizedEmail, { code, expiresAt, attempts: 0 });
-
-  // 2. Persist in Supabase email_verifications table if available
+  // 1. Persist in Supabase email_verifications table if available
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
@@ -78,16 +77,25 @@ export async function storeOtp(email: string, code: string): Promise<void> {
         attempts: 0,
       }, { onConflict: "email" });
 
-      if (error) {
-        console.warn(
-          `[OTP Store] Supabase email_verifications table unavailable (${error.message || "error"}). Falling back to in-memory OTP store.`
-        );
+      if (!error) {
+        supabaseAuthoritativeEmails.add(normalizedEmail);
+        otpStore.delete(normalizedEmail);
+        return;
       }
+
+      supabaseAuthoritativeEmails.delete(normalizedEmail);
+      console.warn(
+        `[OTP Store] Supabase email_verifications table unavailable (${error.message || "error"}). Falling back to in-memory OTP store.`
+      );
     } catch (err: unknown) {
+      supabaseAuthoritativeEmails.delete(normalizedEmail);
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[OTP Store] Supabase persistence exception (${message}). Falling back to in-memory OTP store.`);
     }
   }
+
+  // 2. Fallback: Supabase unavailable, utilize in-memory OTP fallback
+  otpStore.set(normalizedEmail, { code, expiresAt, attempts: 0 });
 }
 
 /**
@@ -101,43 +109,68 @@ export async function verifyOtp(email: string, inputCode: string): Promise<boole
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase
+      const { data: record, error: fetchError } = await supabase
         .from("email_verifications")
-        .select("*")
+        .select("attempts")
         .eq("email", normalizedEmail)
         .single();
 
-      if (!error && data) {
-        const isExpired = new Date(data.expires_at).getTime() < Date.now();
-        if (isExpired) {
-          await deleteOtp(normalizedEmail);
-          return false;
-        }
+      // A PGRST116 no-row result indicates the table exists but no entry was found
+      if (fetchError && fetchError.code === "PGRST116") {
+        return false;
+      }
 
-        const currentAttempts = typeof data.attempts === "number" ? data.attempts : 0;
+      if (!fetchError && record) {
+        const currentAttempts = typeof record.attempts === "number" ? record.attempts : 0;
         if (currentAttempts >= 5) {
           await deleteOtp(normalizedEmail);
           return false;
         }
 
-        if (safeTimingCompare(data.code, trimmedCode)) {
+        const nextAttempts = currentAttempts + 1;
+
+        // Atomically reserve an attempt only when attempts is below 5, returning the verification data
+        const { data: updatedRows, error: updateError } = await supabase
+          .from("email_verifications")
+          .update({ attempts: nextAttempts })
+          .eq("email", normalizedEmail)
+          .eq("attempts", currentAttempts)
+          .lt("attempts", 5)
+          .select("code, expires_at, attempts");
+
+        if (updateError || !updatedRows || updatedRows.length === 0) {
+          // Zero affected rows (concurrency collision) or update error -> fail request
+          return false;
+        }
+
+        const verifiedData = updatedRows[0];
+
+        // Validate expiry
+        const isExpired = new Date(verifiedData.expires_at).getTime() < Date.now();
+        if (isExpired) {
+          await deleteOtp(normalizedEmail);
+          return false;
+        }
+
+        // Compare the returned code
+        if (safeTimingCompare(verifiedData.code, trimmedCode)) {
           await deleteOtp(normalizedEmail);
           return true;
         }
 
-        const nextAttempts = currentAttempts + 1;
-        if (nextAttempts >= 5) {
+        // Lock out and cleanup once attempts limit is reached
+        if (verifiedData.attempts >= 5) {
           await deleteOtp(normalizedEmail);
-        } else {
-          await supabase
-            .from("email_verifications")
-            .update({ attempts: nextAttempts })
-            .eq("email", normalizedEmail);
         }
         return false;
       }
     } catch {
       // Supabase query error, table missing, or connection issue -> proceed to in-memory fallback
+    }
+
+    // Do not consult in-memory store when the database was authoritative for this entry
+    if (supabaseAuthoritativeEmails.has(normalizedEmail)) {
+      return false;
     }
   }
 
@@ -154,12 +187,13 @@ export async function verifyOtp(email: string, inputCode: string): Promise<boole
       return false;
     }
 
+    memEntry.attempts += 1;
+
     if (safeTimingCompare(memEntry.code, trimmedCode)) {
       await deleteOtp(normalizedEmail);
       return true;
     }
 
-    memEntry.attempts += 1;
     if (memEntry.attempts >= 5) {
       await deleteOtp(normalizedEmail);
     }
