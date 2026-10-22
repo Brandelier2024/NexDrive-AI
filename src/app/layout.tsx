@@ -28,6 +28,16 @@ export const metadata: Metadata = {
   description:
     "Intelligent semantic search across company OneDrive and SharePoint media, raw footage, video drafts, and project folders with verified direct links.",
   keywords: ["DriveFinder", "OneDrive", "media locator", "RAG chatbot", "file search", "SharePoint"],
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    shortcut: "/favicon.svg",
+    apple: [
+      { url: "/apple-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

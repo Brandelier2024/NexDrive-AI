@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { rewriteQuery, searchOneDriveItems, groupItemsByFolder } from "@/lib/retrieval/retriever";
-import { searchPersonalOneDrive } from "@/lib/graph/personal-drive";
+import { searchPersonalOneDrive, searchSharedDataStorage } from "@/lib/graph/personal-drive";
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
@@ -36,13 +36,22 @@ export async function POST(req: Request) {
     // 1. Rewrite multi-turn conversational query
     const rewrittenQuery = await rewriteQuery(trimmedMessage, chat_history);
 
-    // 2. Dual-mode Retrieval: Company Shared Drive + Personal OneDrive
+    // 2. Multi-Drive Retrieval: Company Shared Drive + Corporate Data Storage Accounts + Personal OneDrive
     let companyRecords: OneDriveRecord[] = [];
+    let sharedStorageRecords: OneDriveRecord[] = [];
     let personalRecords: OneDriveRecord[] = [];
 
     // Search company shared drive if scope is "all" or "company"
     if (scope === "all" || scope === "company") {
       companyRecords = await searchOneDriveItems(rewrittenQuery);
+    }
+
+    // Search corporate data storage drives (data.brandelier@brandelier.in & data.brandelier2@brandelier.in)
+    // which store raw footage, client shoots, and project folders accessible by everyone
+    try {
+      sharedStorageRecords = await searchSharedDataStorage(rewrittenQuery);
+    } catch (storageError) {
+      console.warn("[Chat API] Failed to search shared data storage accounts:", storageError);
     }
 
     // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
@@ -58,7 +67,7 @@ export async function POST(req: Request) {
         personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
       } catch (personalError) {
         console.error("[Chat API] Failed to search personal OneDrive:", personalError);
-        if (scope === "personal") {
+        if (scope === "personal" && sharedStorageRecords.length === 0) {
           return NextResponse.json(
             { error: "Failed to search personal OneDrive. Please verify your Microsoft 365 connection or try again later." },
             { status: 502 }
@@ -67,8 +76,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // Combine retrieved records (personal records first so user sees their own assets prominently)
-    const combinedRecords: OneDriveRecord[] = [...personalRecords, ...companyRecords];
+    // Combine retrieved records: Personal first, then Shared Data Storage, then Company shared library
+    const combinedRecords: OneDriveRecord[] = [
+      ...personalRecords,
+      ...sharedStorageRecords,
+      ...companyRecords,
+    ];
     const folderCards = groupItemsByFolder(combinedRecords);
 
     // 3. Generate answer with strict URL fidelity guardrail

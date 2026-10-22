@@ -515,6 +515,7 @@ export function groupItemsByFolder(matchedItems: OneDriveRecord[]): FolderCard[]
         matched_files: [],
         is_personal: item.is_personal,
         drive_scope: item.drive_scope,
+        storage_account: item.storage_account,
       };
       folderMap.set(folderKey, card);
     }
@@ -537,6 +538,8 @@ export function groupItemsByFolder(matchedItems: OneDriveRecord[]): FolderCard[]
         visual_tags: item.visual_tags ?? undefined,
         similarity: item.similarity,
         is_personal: item.is_personal,
+        drive_scope: item.drive_scope,
+        storage_account: item.storage_account,
       };
 
       // Deduplicate file

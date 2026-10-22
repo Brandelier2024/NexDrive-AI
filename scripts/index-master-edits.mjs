@@ -1,30 +1,12 @@
 import ExcelJS from "exceljs";
-import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
-
-function generateMasterEditId(
-  sheetName,
-  client,
-  heading,
-  rawUrl,
-  finalUrl,
-  occurrenceIndex = 0
-) {
-  const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-  const rawKey = [
-    sheetName.trim().toLowerCase(),
-    (client || "").trim().toLowerCase(),
-    (heading || "").trim().toLowerCase(),
-    (rawUrl || "").trim().toLowerCase(),
-    (finalUrl || "").trim().toLowerCase(),
-  ].join("|");
-
-  const hash = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 16);
-  const suffix = occurrenceIndex > 0 ? `_${occurrenceIndex}` : "";
-  return `master_edit_${safeSheetKey}_${hash}${suffix}`;
-}
+import {
+  extractCell,
+  extractHeaderCell,
+  generateMasterEditId,
+} from "../src/lib/crawler/master-edits-parser.mjs";
 
 // 1. Load environment variables from .env.local
 const envPath = path.resolve(process.cwd(), ".env.local");
@@ -109,62 +91,6 @@ async function downloadLiveWorkbook(accessToken) {
   return filePath;
 }
 
-// Helper: Normalize SharePoint URLs
-function normalizeUrl(rawUrl) {
-  if (!rawUrl) return "";
-  let url = String(rawUrl).trim().replace(/^['"]|['"]$/g, "");
-  if (!url) return "";
-
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    return url;
-  }
-
-  // Handle relative SharePoint paths like ../../../:f:/g/... or :f:/g/...
-  const cleaned = url.replace(/^(\.\.[\/\\])+/, "/").replace(/^\/+/, "/");
-  return `https://brandeliermediaworksllp-my.sharepoint.com${cleaned}`;
-}
-
-// Helper: Extract text and url from cell
-function extractCell(cell) {
-  if (!cell) return { text: "", url: "" };
-  let val = cell.value;
-  if (val === null || val === undefined) return { text: "", url: "" };
-
-  if (typeof val === "object") {
-    if (val.hyperlink) {
-      return {
-        text: String(val.text || val.hyperlink).trim(),
-        url: normalizeUrl(val.hyperlink),
-      };
-    }
-    if (val.result !== undefined) {
-      const resStr = String(val.result || "").trim();
-      const formStr = String(val.formula || "").trim();
-      const m = formStr.match(/HYPERLINK\(\s*["']([^"']+)["']\s*(?:,\s*["']([^"']+)["'])?\s*\)/i);
-      if (m) {
-        return {
-          text: (m[2] || resStr || m[1]).trim(),
-          url: normalizeUrl(m[1]),
-        };
-      }
-      return { text: resStr, url: normalizeUrl(resStr) };
-    }
-    if (val instanceof Date) {
-      return { text: val.toISOString().split("T")[0], url: "" };
-    }
-    if (val.richText) {
-      const fullText = val.richText.map((r) => r.text).join("");
-      return { text: fullText.trim(), url: "" };
-    }
-  }
-
-  const str = String(val).trim();
-  if (/^https?:\/\//i.test(str)) {
-    return { text: str, url: normalizeUrl(str) };
-  }
-
-  return { text: str, url: "" };
-}
 
 function safeIsoDate(raw) {
   if (!raw) return new Date().toISOString();
@@ -245,7 +171,7 @@ async function runMasterEditsPipeline() {
       const row = ws.getRow(r);
       const rowVals = [];
       row.eachCell({ includeEmpty: true }, (c, col) => {
-        rowVals[col] = String(c.value || "").trim().toLowerCase();
+        rowVals[col] = extractHeaderCell(c);
       });
       if (
         rowVals.some(

@@ -1,90 +1,16 @@
 import ExcelJS from "exceljs";
-import crypto from "crypto";
 import { config } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
-
-function generateMasterEditId(
-  sheetName: string,
-  client: string,
-  heading: string,
-  rawUrl: string,
-  finalUrl: string,
-  occurrenceIndex = 0
-): string {
-  const safeSheetKey = sheetName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-  const rawKey = [
-    sheetName.trim().toLowerCase(),
-    (client || "").trim().toLowerCase(),
-    (heading || "").trim().toLowerCase(),
-    (rawUrl || "").trim().toLowerCase(),
-    (finalUrl || "").trim().toLowerCase(),
-  ].join("|");
-
-  const hash = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 16);
-  const suffix = occurrenceIndex > 0 ? `_${occurrenceIndex}` : "";
-  return `master_edit_${safeSheetKey}_${hash}${suffix}`;
-}
+import {
+  extractCell,
+  extractHeaderCell,
+  generateMasterEditId,
+} from "./master-edits-parser.mjs";
 
 const DRIVE_ID = "b!4UkkSUBb7EONrBN-9t-yC8G83OVLLPVNki85r7d7cjAJTTBA0NswRoLhu1Ogh6mk";
 const ITEM_ID = "01WWQKDCQM3M6Q7CFNNJH2HDSBDPJCWXQJ";
 const MASTER_SHEET_FALLBACK_URL =
   "https://brandeliermediaworksllp-my.sharepoint.com/:x:/r/personal/rushikesh_brandelier_in/_layouts/15/Doc.aspx?sourcedoc=%7B0F3DDB0C-AD88-4F6A-A38E-411BD22B5E09%7D&file=BRANDELIER%20MASTER%20EDITS.xlsx";
-
-function normalizeUrl(rawUrl: unknown): string {
-  if (!rawUrl) return "";
-  const url = String(rawUrl).trim().replace(/^['"]|['"]$/g, "");
-  if (!url) return "";
-
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    return url;
-  }
-
-  // Handle relative SharePoint paths like ../../../:f:/g/... or :f:/g/...
-  const cleaned = url.replace(/^(\.\.[\/\\])+/, "/").replace(/^\/+/, "/");
-  return `https://brandeliermediaworksllp-my.sharepoint.com${cleaned}`;
-}
-
-function extractCell(cell: ExcelJS.Cell): { text: string; url: string } {
-  if (!cell) return { text: "", url: "" };
-  const val = cell.value;
-  if (val === null || val === undefined) return { text: "", url: "" };
-
-  if (typeof val === "object") {
-    // Hyperlink object
-    const cellLink = val as { text?: string; hyperlink?: string };
-    if (cellLink.hyperlink) {
-      return {
-        text: String(cellLink.text || cellLink.hyperlink).trim(),
-        url: normalizeUrl(cellLink.hyperlink),
-      };
-    }
-    // Formula object
-    const formulaVal = val as { result?: unknown; formula?: string };
-    if (formulaVal.result !== undefined) {
-      const resStr = String(formulaVal.result || "").trim();
-      const formStr = String(formulaVal.formula || "").trim();
-      const m = formStr.match(/HYPERLINK\(\s*["']([^"']+)["']\s*(?:,\s*["']([^"']+)["'])?\s*\)/i);
-      if (m) {
-        return {
-          text: (m[2] || resStr || m[1]).trim(),
-          url: normalizeUrl(m[1]),
-        };
-      }
-      return { text: resStr, url: normalizeUrl(resStr) };
-    }
-    // Date object
-    if (val instanceof Date) {
-      return { text: val.toISOString().split("T")[0], url: "" };
-    }
-  }
-
-  const str = String(val).trim();
-  if (/^https?:\/\//i.test(str)) {
-    return { text: str, url: normalizeUrl(str) };
-  }
-
-  return { text: str, url: "" };
-}
 
 function safeIsoDate(raw: string): string {
   if (!raw) return new Date().toISOString();
@@ -223,7 +149,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
       const row = ws.getRow(r);
       const rowVals: string[] = [];
       row.eachCell({ includeEmpty: true }, (c, col) => {
-        rowVals[col] = String(c.value || "").trim().toLowerCase();
+        rowVals[col] = extractHeaderCell(c);
       });
       if (
         rowVals.some(
@@ -434,6 +360,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
   const supabase = createServerSupabaseClient();
   const BATCH_SIZE = 200;
   let saved = 0;
+  const upsertErrors: string[] = [];
 
   for (let i = 0; i < dbRecords.length; i += BATCH_SIZE) {
     const chunk = dbRecords.slice(i, i + BATCH_SIZE);
@@ -443,6 +370,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
 
     if (error) {
       console.error(`[MasterEditsSync] Upsert error at batch ${i}:`, error.message);
+      upsertErrors.push(`Batch ${i}: ${error.message}`);
     } else {
       saved += chunk.length;
     }
@@ -497,7 +425,7 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
   }
 
   return {
-    success: true,
+    success: upsertErrors.length === 0,
     totalSynced: saved,
     totalFolders: dbRecords.filter((r) => r.record_type === "folder").length,
     totalFinalVideos: dbRecords.filter((r) => r.record_type === "video").length,
@@ -506,5 +434,6 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
     staleRecordsRemoved,
     sheetsProcessed,
     durationMs: Date.now() - startTime,
+    ...(upsertErrors.length > 0 ? { error: upsertErrors.join("; ") } : {}),
   };
 }

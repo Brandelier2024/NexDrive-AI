@@ -18,6 +18,14 @@ function getIsMobileServerSnapshot() {
   return false;
 }
 
+const emptySubscribe = () => () => {};
+function getIsMountedSnapshot() {
+  return true;
+}
+function getIsMountedServerSnapshot() {
+  return false;
+}
+
 let globalIdCounter = 0;
 function generateUniqueId(prefix: string): string {
   globalIdCounter++;
@@ -79,6 +87,11 @@ export default function ChatUI({ user }: ChatUIProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const isMounted = useSyncExternalStore(
+    emptySubscribe,
+    getIsMountedSnapshot,
+    getIsMountedServerSnapshot
+  );
   const [frequentTopics, setFrequentTopics] = useState<SearchTopicItem[]>([]);
   const [syncStatus, setSyncStatus] = useState<{
     total_items: number;
@@ -1419,13 +1432,15 @@ export default function ChatUI({ user }: ChatUIProps) {
                     }}
                   >
                     {(() => {
-                      const hour = new Date().getHours();
                       const firstName = user?.name ? user.name.split(" ")[0] : (user?.email ? user.email.split("@")[0] : "");
                       let salutation = "Good morning";
-                      if (hour >= 12 && hour < 17) {
-                        salutation = "Good afternoon";
-                      } else if (hour >= 17) {
-                        salutation = "Good evening";
+                      if (isMounted) {
+                        const hour = new Date().getHours();
+                        if (hour >= 12 && hour < 17) {
+                          salutation = "Good afternoon";
+                        } else if (hour >= 17) {
+                          salutation = "Good evening";
+                        }
                       }
                       return firstName ? `${salutation}, ${firstName}` : salutation;
                     })()} 👋
@@ -1675,7 +1690,21 @@ export default function ChatUI({ user }: ChatUIProps) {
                                         }}
                                       >
                                         <span>{folder.parent_folder_name}</span>
-                                        {folder.is_personal ? (
+                                        {folder.drive_scope === "shared_storage" ? (
+                                          <span
+                                            style={{
+                                              fontSize: "0.68rem",
+                                              fontWeight: 600,
+                                              color: "#0284c7",
+                                              background: "#f0f9ff",
+                                              border: "1px solid #bae6fd",
+                                              padding: "1px 7px",
+                                              borderRadius: 9999,
+                                            }}
+                                          >
+                                            {folder.storage_account?.includes("2") ? "Data Storage 2" : "Data Storage 1"}
+                                          </span>
+                                        ) : folder.is_personal ? (
                                           <span
                                             style={{
                                               fontSize: "0.68rem",

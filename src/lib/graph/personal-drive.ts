@@ -76,25 +76,37 @@ function getFolderWebUrl(item: GraphDriveItem, isFolder: boolean): string {
   return item.webUrl;
 }
 
+export const SHARED_DATA_STORAGE_ACCOUNTS = [
+  "data.brandelier@brandelier.in",
+  "data.brandelier2@brandelier.in",
+] as const;
+
+export function isSharedDataStorageAccount(email: string): boolean {
+  const norm = email.toLowerCase().trim();
+  return SHARED_DATA_STORAGE_ACCOUNTS.some((acc) => acc.toLowerCase() === norm);
+}
+
 /**
- * Fetches all items from the employee's personal OneDrive via Microsoft Graph /delta
+ * Fetches all items from an employee's personal OneDrive or corporate data storage account via Microsoft Graph /delta
  * with automatic pagination, request timeout, and cache eviction.
  */
 async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]> {
   const normalizedEmail = userEmail.toLowerCase().trim();
   const cached = userDriveCache.get(normalizedEmail);
   const now = Date.now();
+  const isSharedStorage = isSharedDataStorageAccount(normalizedEmail);
+  const effectiveTtl = isSharedStorage ? 15 * 60 * 1000 : CACHE_TTL_MS; // 15 mins for shared data drives
 
   // Prune expired cache entries to prevent memory growth
   if (userDriveCache.size > 50) {
     for (const [key, entry] of userDriveCache.entries()) {
-      if (now - entry.timestamp > CACHE_TTL_MS) {
+      if (now - entry.timestamp > effectiveTtl) {
         userDriveCache.delete(key);
       }
     }
   }
 
-  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && now - cached.timestamp < effectiveTtl) {
     return cached.items;
   }
 
@@ -102,7 +114,8 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
   let nextUrl: string | undefined = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
   const allItems: GraphDriveItem[] = [];
   let pageCount = 0;
-  const maxPages = 5; // Cap to 5 pages (~1,000 items) for latency safety
+  // Shared storage drives hold large media libraries; allow up to 20 pages (~4,000 items)
+  const maxPages = isSharedStorage ? 20 : 5;
   let hasFailed = false;
 
   while (nextUrl && pageCount < maxPages) {
@@ -290,4 +303,35 @@ export async function searchPersonalOneDrive(
   }
 
   return records;
+}
+
+/**
+ * Searches across the two designated enterprise data storage accounts
+ * (data.brandelier@brandelier.in & data.brandelier2@brandelier.in)
+ * whose files and folders are accessible to all users.
+ */
+export async function searchSharedDataStorage(query: string): Promise<OneDriveRecord[]> {
+  const accounts: readonly string[] = SHARED_DATA_STORAGE_ACCOUNTS;
+  const results = await Promise.all(
+    accounts.map(async (acc: string) => {
+      try {
+        const records = await searchPersonalOneDrive(query, acc);
+        const isStore2 = acc.includes("2");
+        const storeLabel = isStore2 ? "Data Storage 2" : "Data Storage 1";
+        return records.map((r) => ({
+          ...r,
+          item_id: `storage-${isStore2 ? "2" : "1"}-${r.item_id.replace(/^personal-/, "")}`,
+          drive_scope: "shared_storage" as const,
+          storage_account: acc,
+          is_personal: false,
+          visual_summary: `[${storeLabel} Asset]: ${r.folder_path} / ${r.name}`,
+        }));
+      } catch (err) {
+        console.warn(`[Shared Storage] Error searching ${acc}:`, err);
+        return [];
+      }
+    })
+  );
+
+  return results.flat();
 }

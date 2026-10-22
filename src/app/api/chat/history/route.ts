@@ -330,7 +330,13 @@ export async function GET(req: Request) {
           for (const row of userMsgs) {
             const raw = (row.content || "").trim();
             if (!raw || raw.length < 3) continue;
-            const normalized = raw.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+            const normalized = raw
+              .normalize("NFC")
+              .toLowerCase()
+              .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            if (!normalized) continue;
             const time = new Date(row.created_at).getTime();
 
             // Track exact/normalized queries
@@ -342,9 +348,11 @@ export async function GET(req: Request) {
               queryFrequency.set(normalized, { query: raw, count: 1, lastUsed: time });
             }
 
-            // Track recurring keywords
-            const tokens = normalized.split(" ").filter((w: string) => w.length >= 3 && !stopWords.has(w));
-            for (const token of tokens) {
+            // Track recurring keywords (unique per search)
+            const uniqueTokens = new Set<string>(
+              normalized.split(" ").filter((w: string) => w.length >= 3 && !stopWords.has(w))
+            );
+            for (const token of uniqueTokens) {
               const existingKw = keywordFrequency.get(token);
               if (existingKw) {
                 existingKw.count += 1;

@@ -2,6 +2,60 @@ import { FolderCard, OneDriveRecord } from "@/lib/types";
 import { executeWithMultiProviderFallback } from "@/lib/llm/multi-provider";
 
 /**
+ * Extracts verified Raw Data and Final Edit URLs from Master Edit Sheet visual summary strings.
+ */
+export function extractMasterEditUrls(visualSummary: string | null | undefined): {
+  rawUrl: string | null;
+  finalUrl: string | null;
+} {
+  if (!visualSummary) return { rawUrl: null, finalUrl: null };
+
+  let rawUrl: string | null = null;
+  let finalUrl: string | null = null;
+
+  const rawMatch =
+    visualSummary.match(/Raw Data Folder:\s*"([^"]+)"/i) ||
+    visualSummary.match(/Raw Data Folder:\s*(https?:\/\/[^\s|]+)/i);
+  if (rawMatch && rawMatch[1]) {
+    const candidate = rawMatch[1].trim();
+    if (
+      candidate &&
+      candidate.toLowerCase() !== "not linked in sheet" &&
+      (candidate.startsWith("http://") || candidate.startsWith("https://"))
+    ) {
+      try {
+        new URL(candidate);
+        rawUrl = candidate;
+      } catch {
+        rawUrl = null;
+      }
+    }
+  }
+
+  const finalMatch =
+    visualSummary.match(/Final Edit Video:\s*"([^"]+)"/i) ||
+    visualSummary.match(/Final Edit Video:\s*(https?:\/\/[^\s|]+)/i) ||
+    visualSummary.match(/Direct Video Link:\s*(https?:\/\/[^\s|]+)/i);
+  if (finalMatch && finalMatch[1]) {
+    const candidate = finalMatch[1].trim();
+    if (
+      candidate &&
+      candidate.toLowerCase() !== "not linked in sheet" &&
+      (candidate.startsWith("http://") || candidate.startsWith("https://"))
+    ) {
+      try {
+        new URL(candidate);
+        finalUrl = candidate;
+      } catch {
+        finalUrl = null;
+      }
+    }
+  }
+
+  return { rawUrl, finalUrl };
+}
+
+/**
  * Formats retrieved records for the LLM prompt context
  */
 export function formatRetrievedRecords(records: OneDriveRecord[]): string {
@@ -11,6 +65,9 @@ export function formatRetrievedRecords(records: OneDriveRecord[]): string {
 
   return records
     .map((r, i) => {
+      const isMasterEdit = Boolean(
+        r.visual_summary && r.visual_summary.includes("[Master Edit Sheet:")
+      );
       const parts = [
         `Record #${i + 1}:`,
         `Type: ${r.record_type}`,
@@ -22,6 +79,13 @@ export function formatRetrievedRecords(records: OneDriveRecord[]): string {
       if (r.file_web_url) {
         parts.push(`File Direct URL (file_web_url): ${r.file_web_url}`);
       }
+
+      if (isMasterEdit && r.visual_summary) {
+        const { rawUrl, finalUrl } = extractMasterEditUrls(r.visual_summary);
+        parts.push(`Raw Data Folder: ${rawUrl || "Not linked in sheet"}`);
+        parts.push(`Final Edit Video: ${finalUrl || "Not linked in sheet"}`);
+      }
+
       if (r.visual_summary) {
         parts.push(`Visual Summary: ${r.visual_summary}`);
       }
@@ -50,6 +114,11 @@ export function validateAndSanitizeUrls(
   for (const r of retrievedRecords) {
     if (r.folder_web_url) validUrls.add(r.folder_web_url.trim());
     if (r.file_web_url) validUrls.add(r.file_web_url.trim());
+    if (r.visual_summary) {
+      const { rawUrl, finalUrl } = extractMasterEditUrls(r.visual_summary);
+      if (rawUrl) validUrls.add(rawUrl.trim());
+      if (finalUrl) validUrls.add(finalUrl.trim());
+    }
   }
 
   // Regex to match markdown links: [link text](url)
@@ -99,8 +168,18 @@ export function generateDeterministicAnswer(
   ];
 
   for (const card of folderCards) {
-    const scopeLabel = card.is_personal ? "Personal OneDrive" : "Company OneDrive";
-    const badge = card.is_personal ? " *(Personal)*" : "";
+    const isSharedStorage = card.drive_scope === "shared_storage";
+    const storeLabel = card.storage_account?.includes("2") ? "Data Storage 2" : "Data Storage 1";
+    const scopeLabel = isSharedStorage
+      ? storeLabel
+      : card.is_personal
+      ? "Personal OneDrive"
+      : "Company OneDrive";
+    const badge = isSharedStorage
+      ? ` *(${storeLabel})*`
+      : card.is_personal
+      ? " *(Personal)*"
+      : "";
     lines.push(`📁 **[Open ${scopeLabel} Folder: ${card.folder_path}](${card.folder_web_url})**${badge}\n`);
 
     if (card.matched_files.length > 0) {
@@ -140,14 +219,17 @@ export async function generateRagAnswer(
 
 Strict Rules:
 1. Answer using ONLY the records inside <retrieved_onedrive_items>.
-2. NEVER invent, shorten, or modify any URL. Copy folder_web_url and file_web_url character-for-character.
+2. NEVER invent, shorten, or modify any URL. Copy folder_web_url, file_web_url, Raw Data Folder, and Final Edit Video URLs character-for-character.
 3. Always group results by their Parent Folder first and format as a clickable Markdown hyperlink:
    - 📁 **[Open OneDrive Folder: {folder_path}]({folder_web_url})**
 4. If a project record is from the Master Edit Sheet (visual summary starts with [Master Edit Sheet: ...]), clearly present the project details:
    - Client name, Project / Reel title, Assigned Editor, Status, and Shoot / Posting Date.
-   - Provide the direct link to the Raw Data Folder ({folder_web_url}).
-   - If a Final Edit Video link exists ({file_web_url}), provide a direct link to it as:
-     🎬 **[Open Final Edit Video: {name}]({file_web_url})**
+   - For the Raw Data Folder link: source the URL strictly from the "Raw Data Folder:" field. If a valid URL is provided, format as:
+     📁 **[Open Raw Data Folder]({raw_data_url})**
+     If the field is "Not linked in sheet" or unavailable, state: "Raw Data: Not linked in sheet".
+   - For the Final Edit Video link: source the URL strictly from the "Final Edit Video:" field. If a valid URL is provided, format as:
+     🎬 **[Open Final Edit Video: {name}]({final_edit_url})**
+     If the field is "Not linked in sheet" or unavailable, state: "Final Edit: Not linked in sheet".
 5. For standard OneDrive folders and media assets:
    - Group by folder: 📁 **[Open OneDrive Folder: {folder_path}]({folder_web_url})**
    - List child media files beneath it:

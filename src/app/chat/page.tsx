@@ -1,9 +1,11 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import ChatUI from "../chat-ui";
 
 async function AuthenticatedChat() {
+  await connection();
   const session = await auth();
 
   // If not authenticated, redirect to sign in

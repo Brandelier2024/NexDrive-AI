@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { connection } from "next/server";
 import { auth } from "@/lib/auth";
 
 async function HeaderActions() {
+  await connection();
   const session = await auth();
   const isLoggedIn = !!session?.user;
 

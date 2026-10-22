@@ -83,8 +83,9 @@ export async function POST(req: NextRequest) {
     const sendResult = await sendVerificationEmail(normalizedEmail, code);
 
     if (!sendResult.success) {
+      console.error("[Send OTP Error] Email delivery failed:", sendResult.error);
       return NextResponse.json(
-        { error: sendResult.error || "Failed to send verification email. Please check configuration." },
+        { error: "Failed to send verification email. Please try again later or contact support." },
         { status: 500 }
       );
     }
@@ -95,9 +96,8 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     console.error("[Send OTP Error]:", error);
-    const message = error instanceof Error ? error.message : "Failed to send verification code.";
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to send verification code. Please try again later." },
       { status: 500 }
     );
   }
