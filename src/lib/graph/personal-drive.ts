@@ -148,7 +148,6 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
   const pagesPerBatch = isSharedStorage ? 100 : 10;
   const targetMaxPages = pageCount + pagesPerBatch;
   let hasFailed = false;
-  let failureReason = "";
 
   while (nextUrl && pageCount < targetMaxPages) {
     pageCount++;
@@ -163,9 +162,7 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
 
       if (!res.ok) {
         hasFailed = true;
-        const errText = await res.text().catch(() => "");
-        failureReason = `Graph API delta returned ${res.status}: ${errText}`;
-        console.warn(`[Personal OneDrive] Graph API delta for ${normalizedEmail} returned ${res.status}:`, errText);
+        console.warn(`[Personal OneDrive] Graph API delta for ${normalizedEmail} returned HTTP ${res.status}`);
         break;
       }
 
@@ -180,15 +177,14 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
       nextUrl = data["@odata.nextLink"];
     } catch (fetchErr) {
       hasFailed = true;
-      failureReason = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      console.warn(`[Personal OneDrive] Error fetching delta page ${pageCount}:`, fetchErr);
+      console.warn(`[Personal OneDrive] Error fetching delta page ${pageCount}:`, fetchErr instanceof Error ? fetchErr.message : "Network error");
       break;
     }
   }
 
   if (hasFailed) {
     pendingDrivePagination.delete(normalizedEmail);
-    throw new Error(`Failed to fetch OneDrive items for ${normalizedEmail}: ${failureReason}`);
+    throw new Error(`Failed to fetch OneDrive items for ${normalizedEmail}`);
   }
 
   // Only cache in userDriveCache if the listing completed successfully and was not truncated while nextUrl still exists
@@ -223,7 +219,13 @@ export async function searchPersonalOneDrive(
   }
 
   const normalizedEmail = userEmail.toLowerCase().trim();
-  const items = await fetchUserDriveItems(normalizedEmail);
+  let items: GraphDriveItem[] = [];
+  try {
+    items = await fetchUserDriveItems(normalizedEmail);
+  } catch {
+    console.warn(`[Personal OneDrive] Search failed for ${normalizedEmail}; returning empty results.`);
+    return [];
+  }
 
   if (!items || items.length === 0) {
     return [];
