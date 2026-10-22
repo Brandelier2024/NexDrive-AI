@@ -47,11 +47,13 @@ export async function POST(req: Request) {
     }
 
     // Search corporate data storage drives (data.brandelier@brandelier.in & data.brandelier2@brandelier.in)
-    // which store raw footage, client shoots, and project folders accessible by everyone
-    try {
-      sharedStorageRecords = await searchSharedDataStorage(rewrittenQuery);
-    } catch (storageError) {
-      console.warn("[Chat API] Failed to search shared data storage accounts:", storageError);
+    // if scope is "all" or "company"
+    if (scope === "all" || scope === "company") {
+      try {
+        sharedStorageRecords = await searchSharedDataStorage(rewrittenQuery);
+      } catch (storageError) {
+        console.warn("[Chat API] Failed to search shared data storage accounts:", storageError);
+      }
     }
 
     // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
@@ -67,7 +69,7 @@ export async function POST(req: Request) {
         personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
       } catch (personalError) {
         console.error("[Chat API] Failed to search personal OneDrive:", personalError);
-        if (scope === "personal" && sharedStorageRecords.length === 0) {
+        if (scope === "personal") {
           return NextResponse.json(
             { error: "Failed to search personal OneDrive. Please verify your Microsoft 365 connection or try again later." },
             { status: 502 }

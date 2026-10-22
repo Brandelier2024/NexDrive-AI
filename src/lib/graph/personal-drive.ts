@@ -114,8 +114,9 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
   let nextUrl: string | undefined = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
   const allItems: GraphDriveItem[] = [];
   let pageCount = 0;
-  // Shared storage drives hold large media libraries; allow up to 20 pages (~4,000 items)
-  const maxPages = isSharedStorage ? 20 : 5;
+  // Shared storage drives hold large media libraries; allow up to 100 pages (~20,000 items)
+  // to fetch all remaining pages completely, while personal user drives remain capped at 5 pages.
+  const maxPages = isSharedStorage ? 100 : 5;
   let hasFailed = false;
 
   while (nextUrl && pageCount < maxPages) {
@@ -152,8 +153,14 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
     }
   }
 
-  if (!hasFailed) {
+  // Only cache if the listing completed successfully and was not truncated while nextUrl still exists
+  const isComplete = !hasFailed && !nextUrl;
+  if (isComplete) {
     userDriveCache.set(normalizedEmail, { items: allItems, timestamp: now });
+  } else if (nextUrl) {
+    console.warn(
+      `[Personal OneDrive] Listing for ${normalizedEmail} stopped at page ${pageCount} with remaining pages; skipping cache to avoid caching partial results.`
+    );
   }
   return allItems;
 }
