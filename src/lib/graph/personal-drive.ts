@@ -38,6 +38,16 @@ interface CacheEntry {
 const userDriveCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
+// Tracks in-progress pagination cursor for drives exceeding initial maxPages
+// so subsequent searches continue from the nextUrl rather than refetching the same capped pages.
+interface IncompletePaginationState {
+  items: GraphDriveItem[];
+  nextUrl: string;
+  pageCount: number;
+  timestamp: number;
+}
+const pendingDrivePagination = new Map<string, IncompletePaginationState>();
+
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "raw"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "wmv", "m4v", "webm"]);
 
@@ -105,21 +115,42 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
       }
     }
   }
+  if (pendingDrivePagination.size > 50) {
+    for (const [key, entry] of pendingDrivePagination.entries()) {
+      if (now - entry.timestamp > effectiveTtl) {
+        pendingDrivePagination.delete(key);
+      }
+    }
+  }
 
   if (cached && now - cached.timestamp < effectiveTtl) {
     return cached.items;
   }
 
   const token = await getGraphAccessToken();
-  let nextUrl: string | undefined = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
   const allItems: GraphDriveItem[] = [];
+  let nextUrl: string | undefined;
   let pageCount = 0;
-  // Shared storage drives hold large media libraries; allow up to 100 pages (~20,000 items)
-  // to fetch all remaining pages completely, while personal user drives remain capped at 5 pages.
-  const maxPages = isSharedStorage ? 100 : 5;
-  let hasFailed = false;
 
-  while (nextUrl && pageCount < maxPages) {
+  // If a previous search was paused by maxPages, continue through the paginated path
+  // from where it left off instead of refetching the same capped pages from scratch.
+  const pending = pendingDrivePagination.get(normalizedEmail);
+  if (pending && now - pending.timestamp < effectiveTtl) {
+    allItems.push(...pending.items);
+    nextUrl = pending.nextUrl;
+    pageCount = pending.pageCount;
+    pendingDrivePagination.delete(normalizedEmail);
+  } else {
+    nextUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(normalizedEmail)}/drive/root/delta?$select=id,name,webUrl,folder,file,image,video,parentReference,lastModifiedDateTime`;
+  }
+
+  // Shared storage drives allow up to 100 pages per cycle; personal drives allow up to 10 pages per continuation batch
+  const pagesPerBatch = isSharedStorage ? 100 : 10;
+  const targetMaxPages = pageCount + pagesPerBatch;
+  let hasFailed = false;
+  let failureReason = "";
+
+  while (nextUrl && pageCount < targetMaxPages) {
     pageCount++;
     try {
       const res = await fetch(nextUrl, {
@@ -133,6 +164,7 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
       if (!res.ok) {
         hasFailed = true;
         const errText = await res.text().catch(() => "");
+        failureReason = `Graph API delta returned ${res.status}: ${errText}`;
         console.warn(`[Personal OneDrive] Graph API delta for ${normalizedEmail} returned ${res.status}:`, errText);
         break;
       }
@@ -148,18 +180,31 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
       nextUrl = data["@odata.nextLink"];
     } catch (fetchErr) {
       hasFailed = true;
+      failureReason = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       console.warn(`[Personal OneDrive] Error fetching delta page ${pageCount}:`, fetchErr);
       break;
     }
   }
 
-  // Only cache if the listing completed successfully and was not truncated while nextUrl still exists
-  const isComplete = !hasFailed && !nextUrl;
+  if (hasFailed) {
+    pendingDrivePagination.delete(normalizedEmail);
+    throw new Error(`Failed to fetch OneDrive items for ${normalizedEmail}: ${failureReason}`);
+  }
+
+  // Only cache in userDriveCache if the listing completed successfully and was not truncated while nextUrl still exists
+  const isComplete = !nextUrl;
   if (isComplete) {
+    pendingDrivePagination.delete(normalizedEmail);
     userDriveCache.set(normalizedEmail, { items: allItems, timestamp: now });
   } else if (nextUrl) {
+    pendingDrivePagination.set(normalizedEmail, {
+      items: allItems,
+      nextUrl,
+      pageCount,
+      timestamp: now,
+    });
     console.warn(
-      `[Personal OneDrive] Listing for ${normalizedEmail} stopped at page ${pageCount} with remaining pages; skipping cache to avoid caching partial results.`
+      `[Personal OneDrive] Listing for ${normalizedEmail} paused at page ${pageCount} with remaining pages; continuing pagination on next search (incomplete listing not cached in userDriveCache).`
     );
   }
   return allItems;
