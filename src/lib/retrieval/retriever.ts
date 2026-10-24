@@ -45,8 +45,14 @@ ${trimmed}`;
       model: modelName,
       contents: prompt,
     });
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve(null), 2000);
+    });
     const response = await Promise.race([rewritePromise, timeoutPromise]);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
 
     if (!response) {
       console.warn("[Retriever] Query rewriting timed out (2s limit), using original query");

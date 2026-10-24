@@ -103,13 +103,15 @@ export function resetRateLimits(): void {
 }
 
 const IPV4_REGEX = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-const IPV6_REGEX = /^[0-9a-fA-F:.]+$/;
 
 function isValidIp(ip: string): boolean {
   if (!ip || typeof ip !== "string") return false;
   const trimmed = ip.trim();
   if (trimmed.length === 0 || trimmed.length > 45) return false;
-  return IPV4_REGEX.test(trimmed) || IPV6_REGEX.test(trimmed);
+  if (IPV4_REGEX.test(trimmed)) return true;
+  // Valid IPv6 format: contains at least 2 colons, max 7 colons, valid hex/colon characters
+  const colonCount = (trimmed.match(/:/g) || []).length;
+  return colonCount >= 2 && colonCount <= 7 && /^[0-9a-fA-F:]+$/.test(trimmed);
 }
 
 /**

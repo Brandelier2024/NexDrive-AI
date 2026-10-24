@@ -61,9 +61,17 @@ export function extractMasterEditUrls(visualSummary: string | null | undefined):
  */
 export function sanitizePromptText(text: string | null | undefined): string {
   if (!text) return "";
-  return String(text)
-    .replace(/<\/?(?:retrieved_onedrive_items|master_edits|system_override|system_instruction|context)[^>]*>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "");
+  let sanitized = String(text).replace(/<!--[\s\S]*?-->/g, "");
+  const tagRegex = /<\/?(?:retrieved_onedrive_items|master_edits|system_override|system_instruction|context)[^>]*>/gi;
+  let prev = "";
+  let passes = 0;
+  // Multi-pass loop prevents nested delimiter evasion attacks (e.g. <<tag>tag>)
+  while (prev !== sanitized && passes < 5) {
+    prev = sanitized;
+    sanitized = sanitized.replace(tagRegex, "");
+    passes++;
+  }
+  return sanitized;
 }
 
 /**

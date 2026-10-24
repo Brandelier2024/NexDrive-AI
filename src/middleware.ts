@@ -9,7 +9,8 @@ export default auth((req) => {
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/auth") ||
     pathname.startsWith("/_next") ||
-    pathname === "/favicon.ico"
+    pathname === "/favicon.ico" ||
+    /\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$/i.test(pathname)
   ) {
     return NextResponse.next();
   }
@@ -33,6 +34,8 @@ export default auth((req) => {
 });
 
 export const config = {
-  // Protect all routes by default while bypassing Next.js static asset bundles
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Protect all routes by default while bypassing Next.js static asset bundles and public files
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$).*)",
+  ],
 };

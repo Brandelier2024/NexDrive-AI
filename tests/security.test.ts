@@ -29,6 +29,8 @@ describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
 
   it("should reject external, unauthorized, or malformed inputs", () => {
     assert.equal(isAdminUser("attacker@evil.com"), false);
+    assert.equal(isAdminUser("admin@attacker.com"), false);
+    assert.equal(isAdminUser("admin@gmail.com"), false);
     assert.equal(isAdminUser(""), false);
     assert.equal(isAdminUser(null), false);
     assert.equal(isAdminUser(undefined), false);
@@ -152,6 +154,14 @@ describe("4. Prompt Injection & Boundary Delimiter Sanitization", () => {
     assert.equal(sanitized.includes("</master_edits>"), false);
     assert.equal(sanitized.includes("<!-- inject -->"), false);
     assert.ok(sanitized.includes("secret"));
+  });
+
+  it("should prevent nested multi-pass delimiter evasion attacks", () => {
+    const nested = "<<retrieved_onedrive_items>retrieved_onedrive_items>nested_payload</retrieved_onedrive_items>";
+    const sanitized = sanitizePromptText(nested);
+    assert.equal(sanitized.includes("<retrieved_onedrive_items>"), false);
+    assert.equal(sanitized.includes("</retrieved_onedrive_items>"), false);
+    assert.ok(sanitized.includes("nested_payload"));
   });
 
   it("should sanitize retrieved records during formatting", () => {

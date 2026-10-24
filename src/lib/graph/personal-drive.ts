@@ -1,4 +1,4 @@
-import { getGraphAccessToken } from "./auth";
+import { getGraphAccessToken, isAzureConfigured } from "./auth";
 import { OneDriveRecord, RecordType } from "@/lib/types";
 import { STOP_WORDS } from "@/lib/retrieval/retriever";
 import { isCompanyEmail } from "@/lib/config";
@@ -429,6 +429,9 @@ export async function searchSharedDataStorage(query: string): Promise<OneDriveRe
  * Ensures the ~17,500 shared storage files are pre-cached in memory for sub-second searches.
  */
 export function warmupSharedDataStorage(): void {
+  if (!isAzureConfigured()) {
+    return;
+  }
   for (const acc of SHARED_DATA_STORAGE_ACCOUNTS) {
     const norm = acc.toLowerCase();
     if (!userDriveCache.has(norm) && !activeBackgroundSyncs.has(norm)) {

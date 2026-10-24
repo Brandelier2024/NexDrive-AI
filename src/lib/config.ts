@@ -71,6 +71,6 @@ export function isAdminUser(email?: string | null): boolean {
     normalized === defaultAdmin ||
     normalized === dataAdmin ||
     normalized === dataAdmin2 ||
-    normalized.startsWith("admin@")
+    (normalized.startsWith("admin@") && isCompanyEmail(normalized))
   );
 }

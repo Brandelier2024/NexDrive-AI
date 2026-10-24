@@ -11,7 +11,7 @@ import { createServerSupabaseClient } from "@/lib/supabase";
 import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
 
 // Asynchronously warm up the 17,500 shared storage files so user searches don't hit cold fetches
-if (process.env.NODE_ENV !== "test") {
+if (process.env.NODE_ENV !== "test" && process.env.NEXT_PHASE !== "phase-production-build") {
   setTimeout(() => {
     warmupSharedDataStorage();
   }, 1000);

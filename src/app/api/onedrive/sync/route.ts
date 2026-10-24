@@ -61,7 +61,8 @@ export async function POST() {
         );
       }
       acquiredViaDb = true;
-    } catch {
+    } catch (dbLockErr) {
+      console.warn("[Sync API] Distributed lock acquisition via Supabase failed; falling back to local lock:", dbLockErr);
       // Fallback to process lock if Supabase table is unreachable
       if (fallbackLocalLock) {
         return NextResponse.json(
