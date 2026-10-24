@@ -40,10 +40,18 @@ ${formattedHistory}
 Latest Message:
 ${trimmed}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+    const modelName = config.gemini.visionModel || "gemini-2.5-flash";
+    const rewritePromise = ai.models.generateContent({
+      model: modelName,
       contents: prompt,
     });
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+    const response = await Promise.race([rewritePromise, timeoutPromise]);
+
+    if (!response) {
+      console.warn("[Retriever] Query rewriting timed out (2s limit), using original query");
+      return trimmed;
+    }
 
     const rewritten = response.text?.trim();
     return rewritten || trimmed;

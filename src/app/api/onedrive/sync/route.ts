@@ -1,32 +1,96 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { syncOneDrive, getAllIndexedRecords } from "@/lib/crawler/indexer";
 import { isAzureConfigured } from "@/lib/graph/auth";
 import { isGeminiConfigured } from "@/lib/crawler/vision-describer";
 import { auth } from "@/lib/auth";
+import { isAdminUser } from "@/lib/config";
+import { createServerSupabaseClient } from "@/lib/supabase";
 
-let isSyncInProgress = false;
+export const maxDuration = 300;
+
+const LOCK_ID = "onedrive_sync_lock";
+const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
+let fallbackLocalLock = false;
 
 export async function POST() {
   try {
     const session = await auth();
-    // Allow sync if authenticated
     if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
     }
 
-    if (isSyncInProgress) {
+    if (!isAdminUser(session.user.email)) {
       return NextResponse.json(
-        { success: false, error: "A sync is already actively running. Please wait for it to finish." },
-        { status: 429 }
+        { success: false, error: "Forbidden: Administrative privileges required to trigger OneDrive synchronization." },
+        { status: 403 }
       );
     }
 
-    isSyncInProgress = true;
+    const ownerToken = crypto.randomUUID();
+    let supabase: ReturnType<typeof createServerSupabaseClient> | null = null;
+    let acquiredViaDb = false;
+
+    try {
+      supabase = createServerSupabaseClient();
+      const expiredThreshold = new Date(Date.now() - LOCK_TIMEOUT_MS).toISOString();
+
+      // Ensure lock row exists idempotently
+      await supabase
+        .from("sync_state")
+        .upsert(
+          { id: LOCK_ID, delta_link: "idle", last_sync_at: new Date(0).toISOString() },
+          { onConflict: "id", ignoreDuplicates: true }
+        );
+
+      // Atomically acquire lock
+      const { data: acquiredRows } = await supabase
+        .from("sync_state")
+        .update({
+          delta_link: ownerToken,
+          last_sync_at: new Date().toISOString(),
+        })
+        .eq("id", LOCK_ID)
+        .or(`delta_link.eq.idle,last_sync_at.lt.${expiredThreshold}`)
+        .select("id, delta_link, last_sync_at");
+
+      if (!acquiredRows || acquiredRows.length === 0) {
+        return NextResponse.json(
+          { success: false, error: "A sync is already actively running. Please wait for it to finish." },
+          { status: 429 }
+        );
+      }
+      acquiredViaDb = true;
+    } catch {
+      // Fallback to process lock if Supabase table is unreachable
+      if (fallbackLocalLock) {
+        return NextResponse.json(
+          { success: false, error: "A sync is already actively running. Please wait for it to finish." },
+          { status: 429 }
+        );
+      }
+      fallbackLocalLock = true;
+    }
+
     try {
       const result = await syncOneDrive();
       return NextResponse.json(result);
     } finally {
-      isSyncInProgress = false;
+      if (acquiredViaDb && supabase) {
+        try {
+          await supabase
+            .from("sync_state")
+            .update({
+              delta_link: "idle",
+              last_sync_at: new Date().toISOString(),
+            })
+            .eq("id", LOCK_ID)
+            .eq("delta_link", ownerToken);
+        } catch (releaseErr) {
+          console.error("[Sync API Error] Failed to release db lock:", releaseErr);
+        }
+      }
+      fallbackLocalLock = false;
     }
   } catch (error: unknown) {
     console.error("[Sync API Error]:", error);

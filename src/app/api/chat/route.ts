@@ -1,10 +1,21 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { rewriteQuery, searchOneDriveItems, groupItemsByFolder } from "@/lib/retrieval/retriever";
-import { searchPersonalOneDrive, searchSharedDataStorage } from "@/lib/graph/personal-drive";
+import {
+  searchPersonalOneDrive,
+  searchSharedDataStorage,
+  warmupSharedDataStorage,
+} from "@/lib/graph/personal-drive";
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
+
+// Asynchronously warm up the 17,500 shared storage files so user searches don't hit cold fetches
+if (process.env.NODE_ENV !== "test") {
+  setTimeout(() => {
+    warmupSharedDataStorage();
+  }, 1000);
+}
 
 export async function POST(req: Request) {
   try {
@@ -36,27 +47,7 @@ export async function POST(req: Request) {
     // 1. Rewrite multi-turn conversational query
     const rewrittenQuery = await rewriteQuery(trimmedMessage, chat_history);
 
-    // 2. Multi-Drive Retrieval: Company Shared Drive + Corporate Data Storage Accounts + Personal OneDrive
-    let companyRecords: OneDriveRecord[] = [];
-    let sharedStorageRecords: OneDriveRecord[] = [];
-    let personalRecords: OneDriveRecord[] = [];
-
-    // Search company shared drive if scope is "all" or "company"
-    if (scope === "all" || scope === "company") {
-      companyRecords = await searchOneDriveItems(rewrittenQuery);
-    }
-
-    // Search corporate data storage drives (data.brandelier@brandelier.in & data.brandelier2@brandelier.in)
-    // if scope is "all" or "company"
-    if (scope === "all" || scope === "company") {
-      try {
-        sharedStorageRecords = await searchSharedDataStorage(rewrittenQuery);
-      } catch (storageError) {
-        console.warn("[Chat API] Failed to search shared data storage accounts:", storageError);
-      }
-    }
-
-    // Search authenticated employee's personal OneDrive if scope is "all" or "personal"
+    // Validate email requirement for personal searches before dispatching
     if (scope === "personal" && !userEmail) {
       return NextResponse.json(
         { error: "User email is required for personal OneDrive searches." },
@@ -64,18 +55,37 @@ export async function POST(req: Request) {
       );
     }
 
-    if ((scope === "all" || scope === "personal") && userEmail) {
-      try {
-        personalRecords = await searchPersonalOneDrive(rewrittenQuery, userEmail);
-      } catch (personalError) {
-        console.error("[Chat API] Failed to search personal OneDrive:", personalError);
-        if (scope === "personal") {
-          return NextResponse.json(
-            { error: "Failed to search personal OneDrive. Please verify your Microsoft 365 connection or try again later." },
-            { status: 502 }
-          );
-        }
+    // 2. Multi-Drive Retrieval in Parallel: Company Shared Drive + Corporate Data Storage + Personal OneDrive
+    const shouldSearchCompany = scope === "all" || scope === "company";
+    const shouldSearchShared = scope === "all" || scope === "company";
+    const shouldSearchPersonal = (scope === "all" || scope === "personal") && Boolean(userEmail);
+
+    const [companyResult, sharedResult, personalResult] = await Promise.allSettled([
+      shouldSearchCompany ? searchOneDriveItems(rewrittenQuery) : Promise.resolve([]),
+      shouldSearchShared ? searchSharedDataStorage(rewrittenQuery) : Promise.resolve([]),
+      shouldSearchPersonal ? searchPersonalOneDrive(rewrittenQuery, userEmail!) : Promise.resolve([]),
+    ]);
+
+    const companyRecords: OneDriveRecord[] =
+      companyResult.status === "fulfilled" ? companyResult.value : [];
+    const sharedStorageRecords: OneDriveRecord[] =
+      sharedResult.status === "fulfilled" ? sharedResult.value : [];
+    let personalRecords: OneDriveRecord[] = [];
+
+    if (personalResult.status === "fulfilled") {
+      personalRecords = personalResult.value;
+    } else {
+      console.error("[Chat API] Failed to search personal OneDrive:", personalResult.reason);
+      if (scope === "personal") {
+        return NextResponse.json(
+          { error: "Failed to search personal OneDrive. Please verify your Microsoft 365 connection or try again later." },
+          { status: 502 }
+        );
       }
+    }
+
+    if (sharedResult.status === "rejected") {
+      console.warn("[Chat API] Failed to search shared data storage accounts:", sharedResult.reason);
     }
 
     // Combine retrieved records: Personal first, then Shared Data Storage, then Company shared library
