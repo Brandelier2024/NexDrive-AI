@@ -128,10 +128,10 @@ export function getClientIp(req: Request): string {
     }
   }
 
-  // 2. Trust Cloudflare cf-connecting-ip only when verified to arrive via Cloudflare ingress (cf-ray present)
+  // 2. Trust Cloudflare cf-connecting-ip only when verified to arrive via Cloudflare ingress (TRUST_CLOUDFLARE and cf-ray present)
   const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
   const cfRay = req.headers.get("cf-ray")?.trim();
-  const isCloudflareIngress = Boolean(cfRay) || process.env.TRUST_CLOUDFLARE === "true";
+  const isCloudflareIngress = process.env.TRUST_CLOUDFLARE === "true" && Boolean(cfRay);
   if (cfConnectingIp && isCloudflareIngress && isValidIp(cfConnectingIp)) {
     return cfConnectingIp;
   }

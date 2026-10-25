@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 // Known public root-level assets and files
 export const KNOWN_PUBLIC_PATHS = new Set([
+  "/",
   "/favicon.ico",
   "/favicon.svg",
   "/apple-icon.png",

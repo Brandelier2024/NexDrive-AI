@@ -93,7 +93,8 @@ async function callGemini(
   keyState: KeyState,
   systemInstruction: string,
   userPrompt: string,
-  temperature: number = 0.0
+  temperature: number = 0.0,
+  signal?: AbortSignal
 ): Promise<string> {
   const ai = new GoogleGenAI({ apiKey: keyState.key });
   const model = process.env.VISION_MODEL || "gemini-2.5-flash";
@@ -109,11 +110,13 @@ async function callGemini(
       ],
       config: {
         temperature,
+        abortSignal: signal,
       },
     });
 
     return response.text || "";
   } catch (err: unknown) {
+    if (signal?.aborted) throw err;
     const error = err as { status?: number; message?: string };
     // If model not found, fallback to gemini-1.5-flash
     if (error?.status === 404 || error?.message?.includes("not found")) {
@@ -127,6 +130,7 @@ async function callGemini(
         ],
         config: {
           temperature,
+          abortSignal: signal,
         },
       });
       return response.text || "";
@@ -142,7 +146,8 @@ async function callGroq(
   keyState: KeyState,
   systemInstruction: string,
   userPrompt: string,
-  temperature: number = 0.0
+  temperature: number = 0.0,
+  signal?: AbortSignal
 ): Promise<string> {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -159,6 +164,7 @@ async function callGroq(
       temperature,
       max_tokens: 1024,
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -201,13 +207,17 @@ export async function executeWithMultiProviderFallback(
     const key = getHealthyKey("gemini");
     if (!key) break; // All Gemini keys currently on cooldown
 
+    const controller = new AbortController();
     try {
       let timeoutId: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("Gemini timeout limit reached")), timeoutMs);
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Gemini timeout limit reached"));
+        }, timeoutMs);
       });
 
-      const callPromise = callGemini(key, systemInstruction, userPrompt);
+      const callPromise = callGemini(key, systemInstruction, userPrompt, 0.0, controller.signal);
       const rawText = await Promise.race([callPromise, timeoutPromise]).finally(() => {
         if (timeoutId) clearTimeout(timeoutId);
       });
@@ -242,13 +252,17 @@ export async function executeWithMultiProviderFallback(
       const key = getHealthyKey("groq");
       if (!key) break; // All Groq keys on cooldown
 
+      const controller = new AbortController();
       try {
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error("Groq timeout limit reached")), timeoutMs);
+          timeoutId = setTimeout(() => {
+            controller.abort();
+            reject(new Error("Groq timeout limit reached"));
+          }, timeoutMs);
         });
 
-        const callPromise = callGroq(key, systemInstruction, userPrompt);
+        const callPromise = callGroq(key, systemInstruction, userPrompt, 0.0, controller.signal);
         const rawText = await Promise.race([callPromise, timeoutPromise]).finally(() => {
           if (timeoutId) clearTimeout(timeoutId);
         });

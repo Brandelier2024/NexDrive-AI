@@ -10,6 +10,7 @@ import {
 } from "@/lib/generation/rag-chain";
 import { rewriteQuery } from "@/lib/retrieval/retriever";
 import { isPublicPath } from "@/middleware";
+import { GoogleGenAI } from "@google/genai";
 import { OneDriveRecord } from "@/lib/types";
 
 describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
@@ -135,14 +136,41 @@ describe("3. Client IP Header Parsing & Spoofing Defense", () => {
     assert.equal(getClientIp(req), "203.0.113.195");
   });
 
-  it("should accept verified Cloudflare CF-Connecting-IP with CF-Ray present", () => {
-    const req = new Request("http://localhost/api/test", {
-      headers: {
-        "cf-connecting-ip": "198.51.100.22",
-        "cf-ray": "848202948201-BOM",
-      },
-    });
-    assert.equal(getClientIp(req), "198.51.100.22");
+  it("should reject Cloudflare headers by default when TRUST_CLOUDFLARE is unset", () => {
+    const prevTrust = process.env.TRUST_CLOUDFLARE;
+    delete process.env.TRUST_CLOUDFLARE;
+    try {
+      const req = new Request("http://localhost/api/test", {
+        headers: {
+          "cf-connecting-ip": "198.51.100.22",
+          "cf-ray": "848202948201-BOM",
+        },
+      });
+      // Without TRUST_CLOUDFLARE=true, untrusted CF headers are ignored to prevent spoofing
+      assert.equal(getClientIp(req), "127.0.0.1");
+    } finally {
+      if (prevTrust !== undefined) process.env.TRUST_CLOUDFLARE = prevTrust;
+    }
+  });
+
+  it("should accept verified Cloudflare CF-Connecting-IP with CF-Ray present when TRUST_CLOUDFLARE is enabled", () => {
+    const prevTrust = process.env.TRUST_CLOUDFLARE;
+    process.env.TRUST_CLOUDFLARE = "true";
+    try {
+      const req = new Request("http://localhost/api/test", {
+        headers: {
+          "cf-connecting-ip": "198.51.100.22",
+          "cf-ray": "848202948201-BOM",
+        },
+      });
+      assert.equal(getClientIp(req), "198.51.100.22");
+    } finally {
+      if (prevTrust !== undefined) {
+        process.env.TRUST_CLOUDFLARE = prevTrust;
+      } else {
+        delete process.env.TRUST_CLOUDFLARE;
+      }
+    }
   });
 
   it("should extract right-most trusted proxy IP from x-forwarded-for chain", () => {
@@ -309,13 +337,82 @@ describe("6. Query Rewriting Fallback & Timeout Protection", () => {
     assert.equal(resultNoPronouns, original);
   });
 
-  it("should preserve original query as fallback when LLM call fails or times out", async () => {
-    const original = "where is that folder";
-    // With dummy/unconfigured Gemini API key or error, rewriteQuery safely catches and falls back to original
-    const result = await rewriteQuery(original, [
-      { role: "user", content: "Looking for client ABC" },
-    ]);
-    assert.equal(result, original);
+  it("should preserve original query as fallback when LLM call fails", async () => {
+    const prevKey = process.env.GOOGLE_API_KEY;
+    process.env.GOOGLE_API_KEY = "mock-gemini-test-key";
+
+    let stubCallCount = 0;
+    Object.defineProperty(GoogleGenAI.prototype, "models", {
+      get() {
+        return {
+          generateContent: async () => {
+            stubCallCount++;
+            throw new Error("Simulated Gemini API 500 error");
+          },
+        };
+      },
+      set(val) {
+        this._models = val;
+      },
+      configurable: true,
+    });
+
+    try {
+      const original = "where is that folder";
+      const result = await rewriteQuery(original, [
+        { role: "user", content: "Looking for client ABC" },
+      ]);
+      assert.equal(result, original);
+      assert.equal(stubCallCount, 1, "Expected rewriteQuery to invoke stubbed Gemini generateContent");
+    } finally {
+      delete (GoogleGenAI.prototype as any).models;
+      if (prevKey !== undefined) {
+        process.env.GOOGLE_API_KEY = prevKey;
+      } else {
+        delete process.env.GOOGLE_API_KEY;
+      }
+    }
+  });
+
+  it("should preserve original query as fallback when LLM call times out and aborts generation", async () => {
+    const prevKey = process.env.GOOGLE_API_KEY;
+    process.env.GOOGLE_API_KEY = "mock-gemini-test-key";
+
+    let aborted = false;
+    Object.defineProperty(GoogleGenAI.prototype, "models", {
+      get() {
+        return {
+          generateContent: (params: any) => {
+            return new Promise((_, reject) => {
+              params.config?.abortSignal?.addEventListener("abort", () => {
+                aborted = true;
+                reject(new DOMException("This operation was aborted", "AbortError"));
+              });
+            });
+          },
+        };
+      },
+      set(val) {
+        this._models = val;
+      },
+      configurable: true,
+    });
+
+    try {
+      const original = "where is that folder";
+      const result = await rewriteQuery(original, [
+        { role: "user", content: "Looking for client ABC" },
+      ]);
+      assert.equal(result, original);
+      assert.equal(aborted, true, "Expected generation to be aborted upon timeout");
+    } finally {
+      delete (GoogleGenAI.prototype as any).models;
+      if (prevKey !== undefined) {
+        process.env.GOOGLE_API_KEY = prevKey;
+      } else {
+        delete process.env.GOOGLE_API_KEY;
+      }
+    }
   });
 });
 
@@ -332,6 +429,9 @@ describe("7. Middleware Public Path Bypass & Route Protection", () => {
   });
 
   it("should allow known public paths and static assets", () => {
+    // Root landing page
+    assert.equal(isPublicPath("/"), true);
+
     // Public authentication routes
     assert.equal(isPublicPath("/api/auth/session"), true);
     assert.equal(isPublicPath("/api/auth/callback/credentials"), true);

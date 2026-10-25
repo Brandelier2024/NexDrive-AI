@@ -2653,10 +2653,16 @@ function parseMarkdownToHtml(text: string): string {
   // Italic *text*
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
-  // Clickable links [text](url)
+  // Clickable links [text](url) - strictly sanitize protocols against javascript: and data: XSS vectors
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #4f46e5; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;">$1 ↗</a>'
+    (match, linkText, url) => {
+      const cleanUrl = url.trim();
+      if (/^https?:\/\//i.test(cleanUrl) || (cleanUrl.startsWith("/") && !cleanUrl.startsWith("//") && !cleanUrl.includes("\\"))) {
+        return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" style="color: #4f46e5; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;">${linkText} ↗</a>`;
+      }
+      return linkText;
+    }
   );
 
   // Bullets

@@ -151,9 +151,8 @@ export async function POST(req: Request) {
     return NextResponse.json(response);
   } catch (error: unknown) {
     console.error("[Chat API Error]:", error);
-    const message = error instanceof Error ? error.message : "Internal server error";
     return NextResponse.json(
-      { error: message },
+      { error: "An unexpected error occurred while processing your request. Please try again later." },
       { status: 500 }
     );
   }

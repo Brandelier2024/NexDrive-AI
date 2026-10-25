@@ -381,7 +381,7 @@ export async function searchOneDriveItems(
           let childQuery = supabase
             .from("onedrive_items")
             .select("*")
-            .or(`parent_folder_id.eq.${folder.item_id},folder_path.ilike.${folder.folder_path}/%`)
+            .eq("parent_folder_id", folder.item_id)
             .neq("record_type", "folder");
 
           if (temporal.mediaType) {
@@ -501,7 +501,7 @@ export async function searchOneDriveItems(
         const { data: children } = await supabase
           .from("onedrive_items")
           .select("*")
-          .or(`parent_folder_id.eq.${folder.item_id},folder_path.ilike.${folder.folder_path}/%`)
+          .eq("parent_folder_id", folder.item_id)
           .neq("record_type", "folder")
           .limit(6);
 

@@ -30,7 +30,9 @@ export const config = {
 
   // Gemini
   gemini: {
-    apiKey: (process.env.GOOGLE_API_KEY ?? "").split(",")[0]?.trim() ?? "",
+    get apiKey(): string {
+      return (process.env.GOOGLE_API_KEY ?? "").split(",")[0]?.trim() ?? "";
+    },
     visionModel: process.env.VISION_MODEL ?? "gemini-2.5-flash",
     embeddingModel: process.env.EMBEDDING_MODEL ?? "models/gemini-embedding-001",
     enableVisionCaptioning: process.env.ENABLE_VISION_CAPTIONING === "true",
