@@ -41,17 +41,40 @@ Latest Message:
 ${trimmed}`;
 
     const modelName = config.gemini.visionModel || "gemini-2.5-flash";
+    const controller = new AbortController();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let timedOut = false;
+
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        resolve(null);
+      }, 2000);
+    });
+
     const rewritePromise = ai.models.generateContent({
       model: modelName,
       contents: prompt,
+      config: {
+        abortSignal: controller.signal,
+        httpOptions: { timeout: 2000 },
+      },
     });
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutPromise = new Promise<null>((resolve) => {
-      timeoutHandle = setTimeout(() => resolve(null), 2000);
-    });
-    const response = await Promise.race([rewritePromise, timeoutPromise]);
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
+
+    let response: Awaited<typeof rewritePromise> | null = null;
+    try {
+      response = await Promise.race([rewritePromise, timeoutPromise]);
+    } catch (raceError) {
+      if (timedOut || controller.signal.aborted) {
+        console.warn("[Retriever] Query rewriting timed out (2s limit), using original query");
+        return trimmed;
+      }
+      throw raceError;
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
 
     if (!response) {

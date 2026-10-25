@@ -13,10 +13,12 @@ export const config = {
   auth: {
     secret: process.env.NEXTAUTH_SECRET ?? "dev-secret",
     allowedEmailDomain: process.env.ALLOWED_EMAIL_DOMAIN ?? "yourcompany.com",
-    adminEmails: (process.env.ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean),
+    get adminEmails(): string[] {
+      return (process.env.ADMIN_EMAILS ?? "")
+        .split(",")
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+    },
   },
 
   // Supabase
@@ -44,33 +46,32 @@ export const config = {
 /** Validates that an email belongs to the allowed company domain */
 export function isCompanyEmail(email: string): boolean {
   if (!email || typeof email !== "string") return false;
+  const normalized = email.trim().toLowerCase();
+  const parts = normalized.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return false;
   const domain = config.auth.allowedEmailDomain.toLowerCase();
-  return email.toLowerCase().endsWith(`@${domain}`);
+  return parts[1] === domain;
 }
 
 /**
  * Checks whether a given user email has administrative privileges.
- * Checked against configured ADMIN_EMAILS environment variable or known admin patterns.
+ * Relies strictly on configured ADMIN_EMAILS and returns false when unset or empty.
  */
 export function isAdminUser(email?: string | null): boolean {
   if (!email || typeof email !== "string") return false;
   const normalized = email.trim().toLowerCase();
 
-  // 1. Explicitly configured ADMIN_EMAILS in environment
-  if (config.auth.adminEmails.length > 0) {
-    return config.auth.adminEmails.includes(normalized);
+  // Validate complete email structure with exactly one @
+  const parts = normalized.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return false;
   }
 
-  // 2. Default administrative accounts and conventions
-  const domain = config.auth.allowedEmailDomain.toLowerCase();
-  const defaultAdmin = `admin@${domain}`;
-  const dataAdmin = `data.brandelier@brandelier.in`;
-  const dataAdmin2 = `data.brandelier2@brandelier.in`;
+  // Rely strictly on configured ADMIN_EMAILS (fail-closed if unset or empty)
+  const adminList = config.auth.adminEmails;
+  if (adminList.length === 0) {
+    return false;
+  }
 
-  return (
-    normalized === defaultAdmin ||
-    normalized === dataAdmin ||
-    normalized === dataAdmin2 ||
-    (normalized.startsWith("admin@") && isCompanyEmail(normalized))
-  );
+  return adminList.includes(normalized);
 }

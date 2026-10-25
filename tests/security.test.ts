@@ -8,9 +8,16 @@ import {
   validateAndSanitizeUrls,
   extractMasterEditUrls,
 } from "@/lib/generation/rag-chain";
+import { rewriteQuery } from "@/lib/retrieval/retriever";
+import { isPublicPath } from "@/middleware";
 import { OneDriveRecord } from "@/lib/types";
 
 describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
+  beforeEach(() => {
+    process.env.ADMIN_EMAILS =
+      "data.brandelier@brandelier.in,data.brandelier2@brandelier.in,admin@yourcompany.com";
+  });
+
   it("should authorize recognized administrative accounts", () => {
     assert.equal(isAdminUser("data.brandelier@brandelier.in"), true);
     assert.equal(isAdminUser("data.brandelier2@brandelier.in"), true);
@@ -23,17 +30,38 @@ describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
   });
 
   it("should reject standard employees from administrative operations", () => {
+    process.env.ADMIN_EMAILS =
+      "data.brandelier@brandelier.in,data.brandelier2@brandelier.in,admin@yourcompany.com";
     assert.equal(isAdminUser("john.doe@brandelier.in"), false);
     assert.equal(isAdminUser("editor@yourcompany.com"), false);
+    assert.equal(isAdminUser("staff@brandelier.in"), false);
   });
 
-  it("should reject external, unauthorized, or malformed inputs", () => {
+  it("should reject external, unauthorized, or malformed inputs including admin@evil.com", () => {
+    assert.equal(isAdminUser("admin@evil.com"), false);
     assert.equal(isAdminUser("attacker@evil.com"), false);
     assert.equal(isAdminUser("admin@attacker.com"), false);
     assert.equal(isAdminUser("admin@gmail.com"), false);
+    assert.equal(isAdminUser("admin@attacker.com@yourcompany.com"), false);
     assert.equal(isAdminUser(""), false);
     assert.equal(isAdminUser(null), false);
     assert.equal(isAdminUser(undefined), false);
+  });
+
+  it("should return false for all users when ADMIN_EMAILS is unset or empty", () => {
+    const prev = process.env.ADMIN_EMAILS;
+    try {
+      delete process.env.ADMIN_EMAILS;
+      assert.equal(isAdminUser("data.brandelier@brandelier.in"), false);
+      assert.equal(isAdminUser("admin@yourcompany.com"), false);
+      assert.equal(isAdminUser("admin@evil.com"), false);
+
+      process.env.ADMIN_EMAILS = "   ";
+      assert.equal(isAdminUser("data.brandelier@brandelier.in"), false);
+      assert.equal(isAdminUser("admin@evil.com"), false);
+    } finally {
+      process.env.ADMIN_EMAILS = prev;
+    }
   });
 
   it("should validate company email domains correctly", () => {
@@ -41,6 +69,7 @@ describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
     assert.equal(isCompanyEmail("EMPLOYEE@YOURCOMPANY.COM"), true);
     assert.equal(isCompanyEmail("attacker@gmail.com"), false);
     assert.equal(isCompanyEmail("employee@othercompany.com"), false);
+    assert.equal(isCompanyEmail("admin@attacker.com@yourcompany.com"), false);
     assert.equal(isCompanyEmail(""), false);
   });
 });
@@ -125,6 +154,15 @@ describe("3. Client IP Header Parsing & Spoofing Defense", () => {
     assert.equal(getClientIp(req), "192.0.2.88");
   });
 
+  it("should accept valid IPv4-embedded IPv6 addresses such as ::ffff:192.0.2.128", () => {
+    const req = new Request("http://localhost/api/test", {
+      headers: {
+        "x-forwarded-for": "::ffff:192.0.2.128",
+      },
+    });
+    assert.equal(getClientIp(req), "::ffff:192.0.2.128");
+  });
+
   it("should reject malicious header injection payloads and safely fallback to 127.0.0.1", () => {
     const req = new Request("http://localhost/api/test", {
       headers: {
@@ -162,6 +200,21 @@ describe("4. Prompt Injection & Boundary Delimiter Sanitization", () => {
     assert.equal(sanitized.includes("<retrieved_onedrive_items>"), false);
     assert.equal(sanitized.includes("</retrieved_onedrive_items>"), false);
     assert.ok(sanitized.includes("nested_payload"));
+  });
+
+  it("should completely remove repeated and deeply nested opening and closing delimiters", () => {
+    let deeplyNested = "secret_command";
+    for (let i = 0; i < 10; i++) {
+      deeplyNested = `<retrieved_onedrive_items>${deeplyNested}</retrieved_onedrive_items>`;
+    }
+    const sanitized = sanitizePromptText(deeplyNested);
+    assert.equal(sanitized.includes("<retrieved_onedrive_items>"), false);
+    assert.equal(sanitized.includes("</retrieved_onedrive_items>"), false);
+    assert.equal(sanitized, "secret_command");
+
+    const repeated =
+      "<retrieved_onedrive_items><retrieved_onedrive_items></retrieved_onedrive_items></retrieved_onedrive_items>clean_payload";
+    assert.equal(sanitizePromptText(repeated), "clean_payload");
   });
 
   it("should sanitize retrieved records during formatting", () => {
@@ -239,3 +292,67 @@ describe("5. URL Validation Guardrails & Anti-Hallucination", () => {
     assert.equal(unlinked.finalUrl, null);
   });
 });
+
+describe("6. Query Rewriting Fallback & Timeout Protection", () => {
+  it("should return original query when no chat history or conversational pronouns exist", async () => {
+    const original = "locate summer campaign video";
+    const result = await rewriteQuery(original, []);
+    assert.equal(result, original);
+
+    const resultNoHistory = await rewriteQuery(original);
+    assert.equal(resultNoHistory, original);
+
+    const resultNoPronouns = await rewriteQuery(original, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "how can I help?" },
+    ]);
+    assert.equal(resultNoPronouns, original);
+  });
+
+  it("should preserve original query as fallback when LLM call fails or times out", async () => {
+    const original = "where is that folder";
+    // With dummy/unconfigured Gemini API key or error, rewriteQuery safely catches and falls back to original
+    const result = await rewriteQuery(original, [
+      { role: "user", content: "Looking for client ABC" },
+    ]);
+    assert.equal(result, original);
+  });
+});
+
+describe("7. Middleware Public Path Bypass & Route Protection", () => {
+  it("should enforce authentication on protected paths even if ending with static file extensions", () => {
+    // Attack payloads and sensitive endpoints must NOT bypass authentication
+    assert.equal(isPublicPath("/admin/report.txt"), false);
+    assert.equal(isPublicPath("/api/export.xml"), false);
+    assert.equal(isPublicPath("/api/data.txt"), false);
+    assert.equal(isPublicPath("/api/users.xml"), false);
+    assert.equal(isPublicPath("/chat/history.txt"), false);
+    assert.equal(isPublicPath("/admin.txt"), false);
+    assert.equal(isPublicPath("/secrets.xml"), false);
+  });
+
+  it("should allow known public paths and static assets", () => {
+    // Public authentication routes
+    assert.equal(isPublicPath("/api/auth/session"), true);
+    assert.equal(isPublicPath("/api/auth/callback/credentials"), true);
+    assert.equal(isPublicPath("/auth/signin"), true);
+    assert.equal(isPublicPath("/auth/signup"), true);
+
+    // Next.js static bundles
+    assert.equal(isPublicPath("/_next/static/chunks/main.js"), true);
+
+    // Known public root assets
+    assert.equal(isPublicPath("/favicon.ico"), true);
+    assert.equal(isPublicPath("/favicon.svg"), true);
+    assert.equal(isPublicPath("/apple-icon.png"), true);
+    assert.equal(isPublicPath("/file.svg"), true);
+    assert.equal(isPublicPath("/robots.txt"), true);
+    assert.equal(isPublicPath("/sitemap.xml"), true);
+
+    // Known public asset directories
+    assert.equal(isPublicPath("/images/logo.png"), true);
+    assert.equal(isPublicPath("/static/banner.jpg"), true);
+    assert.equal(isPublicPath("/assets/icon.svg"), true);
+  });
+});
+
