@@ -19,6 +19,7 @@ if (process.env.NODE_ENV !== "test" && process.env.NEXT_PHASE !== "phase-product
 }
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
   try {
     const session = await auth();
     if (!session?.user) {
@@ -167,12 +168,15 @@ export async function POST(req: Request) {
       console.error("[Chat Save Error]:", saveError);
     }
 
+    const durationMs = Date.now() - startTime;
+
     const response: ChatResponse = {
       answer_markdown: answerMarkdown,
       folder_cards: folderCards,
       query: trimmedMessage,
       rewritten_query: rewrittenQuery !== trimmedMessage ? rewrittenQuery : undefined,
       timestamp: new Date().toISOString(),
+      duration_ms: durationMs,
     };
 
     return NextResponse.json(response);

@@ -38,6 +38,7 @@ interface Message {
   content: string;
   folder_cards?: FolderCard[];
   timestamp: string;
+  duration_ms?: number;
 }
 
 interface ChatUIProps {
@@ -375,6 +376,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
+    const requestStartTime = performance.now();
 
     try {
       const historyPayload = messages.map((m) => ({
@@ -398,6 +400,8 @@ export default function ChatUI({ user }: ChatUIProps) {
       }
 
       const data = (await res.json()) as ChatResponse;
+      const clientDuration = Math.round(performance.now() - requestStartTime);
+      const queryDuration = typeof data.duration_ms === "number" ? data.duration_ms : clientDuration;
 
       const assistantMessage: Message = {
         id: generateUniqueId("msg-assistant"),
@@ -405,6 +409,7 @@ export default function ChatUI({ user }: ChatUIProps) {
         content: data.answer_markdown,
         folder_cards: data.folder_cards,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        duration_ms: queryDuration,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -1595,9 +1600,12 @@ export default function ChatUI({ user }: ChatUIProps) {
                     marginBottom: 24,
                   }}
                 >
-                  {/* Message Header / Timestamp */}
-                  <span
+                  {/* Message Header / Timestamp & Query Duration */}
+                  <div
                     style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
                       fontSize: "0.72rem",
                       color: "var(--color-text-tertiary)",
                       marginBottom: 6,
@@ -1605,8 +1613,27 @@ export default function ChatUI({ user }: ChatUIProps) {
                       marginRight: msg.role === "user" ? 4 : 0,
                     }}
                   >
-                    {msg.role === "user" ? "You" : "OneDrive Locator"} • {msg.timestamp}
-                  </span>
+                    <span>{msg.role === "user" ? "You" : "OneDrive Locator"} • {msg.timestamp}</span>
+                    {msg.role === "assistant" && typeof msg.duration_ms === "number" && (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
+                          background: "#eef2ff",
+                          color: "#4f46e5",
+                          border: "1px solid #c7d2fe",
+                          padding: "1px 6px",
+                          borderRadius: 9999,
+                          fontWeight: 600,
+                          fontSize: "0.68rem",
+                        }}
+                        title={`Time taken to process query: ${(msg.duration_ms / 1000).toFixed(2)}s`}
+                      >
+                        ⚡ {(msg.duration_ms / 1000).toFixed(2)}s
+                      </span>
+                    )}
+                  </div>
 
                   {/* Message Body */}
                   <div
@@ -1908,6 +1935,28 @@ export default function ChatUI({ user }: ChatUIProps) {
                                 )}
                               </div>
                             ))}
+                          </div>
+                        )}
+
+                        {/* Query Execution Time Footer */}
+                        {typeof msg.duration_ms === "number" && (
+                          <div
+                            style={{
+                              marginTop: 14,
+                              paddingTop: 8,
+                              borderTop: "1px dashed var(--color-border)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "flex-end",
+                              gap: 5,
+                              fontSize: "0.72rem",
+                              color: "var(--color-text-tertiary)",
+                            }}
+                          >
+                            <span>⚡ Query completed in</span>
+                            <strong style={{ color: "#4f46e5", fontWeight: 600 }}>
+                              {(msg.duration_ms / 1000).toFixed(2)}s
+                            </strong>
                           </div>
                         )}
                       </div>
