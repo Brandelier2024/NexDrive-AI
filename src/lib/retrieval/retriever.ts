@@ -381,21 +381,37 @@ export async function searchOneDriveItems(
 
       // Child expansion for matched folders in temporal search
       if (matchedRecords.length > 0) {
+        // If user specifically asked for folders (e.g. "show me folders from october"),
+        // return the matched folders directly without fetching child media files
+        if (temporal.mediaType === "folder") {
+          return matchedRecords
+            .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+            .slice(0, topK * 2);
+        }
+
         const foldersFound = matchedRecords.filter((r) => r.record_type === "folder");
         if (foldersFound.length > 0) {
-          const folderIds = foldersFound.map((f) => f.item_id);
-          let childQuery = supabase
-            .from("onedrive_items")
-            .select("*")
-            .in("parent_folder_id", folderIds)
-            .neq("record_type", "folder");
+          // Parallel fetch per folder (up to 4 folders, max 4 child files each)
+          // to prevent single-folder starvation while avoiding serial N+1 delays
+          const targetFolders = foldersFound.slice(0, 4);
+          const childResults = await Promise.all(
+            targetFolders.map(async (folder) => {
+              let query = supabase
+                .from("onedrive_items")
+                .select("*")
+                .eq("parent_folder_id", folder.item_id)
+                .neq("record_type", "folder");
 
-          if (temporal.mediaType) {
-            childQuery = childQuery.eq("record_type", temporal.mediaType);
-          }
+              if (temporal.mediaType) {
+                query = query.eq("record_type", temporal.mediaType);
+              }
 
-          const { data: children } = await childQuery.limit(topK * 2);
-          if (children) {
+              const { data } = await query.limit(4);
+              return data || [];
+            })
+          );
+
+          for (const children of childResults) {
             for (const child of children) {
               if (!seenIds.has(child.item_id)) {
                 seenIds.add(child.item_id);
@@ -500,19 +516,24 @@ export async function searchOneDriveItems(
       }
     }
 
-    // Child expansion ONLY on legitimately matched folders
+    // Child expansion ONLY on legitimately matched folders (balanced per folder)
     if (matchedRecords.length > 0) {
       const foldersFound = matchedRecords.filter((r) => r.record_type === "folder");
       if (foldersFound.length > 0) {
-        const folderIds = foldersFound.map((f) => f.item_id);
-        const { data: children } = await supabase
-          .from("onedrive_items")
-          .select("*")
-          .in("parent_folder_id", folderIds)
-          .neq("record_type", "folder")
-          .limit(topK * 2);
+        const targetFolders = foldersFound.slice(0, 4);
+        const childResults = await Promise.all(
+          targetFolders.map(async (folder) => {
+            const { data } = await supabase
+              .from("onedrive_items")
+              .select("*")
+              .eq("parent_folder_id", folder.item_id)
+              .neq("record_type", "folder")
+              .limit(4);
+            return data || [];
+          })
+        );
 
-        if (children && children.length > 0) {
+        for (const children of childResults) {
           for (const child of children) {
             if (!seenIds.has(child.item_id)) {
               seenIds.add(child.item_id);

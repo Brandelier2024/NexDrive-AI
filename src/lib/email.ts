@@ -299,6 +299,8 @@ export async function sendVerificationEmail(
           rejectUnauthorized: true,
           minVersion: "TLSv1.2",
         },
+        disableFileAccess: true,
+        disableUrlAccess: true,
       });
 
       await transporter.sendMail({
