@@ -11,7 +11,18 @@ export const config = {
 
   // Auth
   auth: {
-    secret: process.env.NEXTAUTH_SECRET ?? "dev-secret",
+    get secret(): string {
+      const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+      if (!secret || secret === "dev-secret") {
+        if (process.env.NODE_ENV === "production") {
+          throw new Error(
+            "[FATAL SECURITY ERROR] AUTH_SECRET or NEXTAUTH_SECRET environment variable is missing or set to insecure default in production."
+          );
+        }
+        return "dev-secret";
+      }
+      return secret;
+    },
     allowedEmailDomain: process.env.ALLOWED_EMAIL_DOMAIN ?? "yourcompany.com",
     get adminEmails(): string[] {
       return (process.env.ADMIN_EMAILS ?? "")
@@ -20,6 +31,7 @@ export const config = {
         .filter(Boolean);
     },
   },
+
 
   // Supabase
   supabase: {

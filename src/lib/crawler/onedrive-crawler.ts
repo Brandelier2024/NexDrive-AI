@@ -67,16 +67,25 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
   let newDeltaLink: string | null = null;
   let pageNum = 0;
 
-  // 1. Paginate through Graph API /delta with 429 retry handling
+  let currentAccessToken = accessToken;
+
+  // 1. Paginate through Graph API /delta with 429 retry and 401 token refresh handling
   while (nextUrl) {
     let attempts = 0;
     let res: Response | null = null;
     while (attempts < 4) {
       res = await fetch(nextUrl, {
         headers: {
-          Authorization: `Bearer ${accessToken}`,
+          Authorization: `Bearer ${currentAccessToken}`,
         },
       });
+
+      if (res.status === 401) {
+        attempts++;
+        console.warn("[Graph API] Access token expired mid-crawl. Refreshing token...");
+        currentAccessToken = await getGraphAccessToken();
+        continue;
+      }
 
       if (res.status === 429) {
         attempts++;

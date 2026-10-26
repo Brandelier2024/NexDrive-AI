@@ -162,7 +162,7 @@ async function callGroq(
         { role: "user", content: userPrompt },
       ],
       temperature,
-      max_tokens: 1024,
+      max_tokens: 2048,
     }),
     signal,
   });
@@ -218,6 +218,9 @@ export async function executeWithMultiProviderFallback(
       });
 
       const callPromise = callGemini(key, systemInstruction, userPrompt, 0.0, controller.signal);
+      // Suppress unhandled rejection on the detached promise if timeoutPromise settles first
+      callPromise.catch(() => {});
+
       const rawText = await Promise.race([callPromise, timeoutPromise]).finally(() => {
         if (timeoutId) clearTimeout(timeoutId);
       });
@@ -263,6 +266,9 @@ export async function executeWithMultiProviderFallback(
         });
 
         const callPromise = callGroq(key, systemInstruction, userPrompt, 0.0, controller.signal);
+        // Suppress unhandled rejection on the detached promise if timeoutPromise settles first
+        callPromise.catch(() => {});
+
         const rawText = await Promise.race([callPromise, timeoutPromise]).finally(() => {
           if (timeoutId) clearTimeout(timeoutId);
         });

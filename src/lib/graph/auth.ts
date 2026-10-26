@@ -6,6 +6,7 @@ interface TokenCache {
 }
 
 let cachedToken: TokenCache | null = null;
+let activeTokenPromise: Promise<string> | null = null;
 
 /**
  * Checks if live Azure credentials have been configured
@@ -26,7 +27,8 @@ export function isAzureConfigured(): boolean {
 
 /**
  * Obtains an application-only Bearer token for Microsoft Graph API
- * using OAuth2 Client Credentials Flow. Caches token until near expiry.
+ * using OAuth2 Client Credentials Flow. Caches token until near expiry
+ * and eliminates thundering herd / token stampedes via single-flight mutex.
  */
 export async function getGraphAccessToken(): Promise<string> {
   const { tenantId, clientId, clientSecret } = config.azure;
@@ -43,40 +45,53 @@ export async function getGraphAccessToken(): Promise<string> {
     return cachedToken.accessToken;
   }
 
-  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: "https://graph.microsoft.com/.default",
-    grant_type: "client_credentials",
-  });
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: params.toString(),
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(
-      `Azure AD token request failed (${response.status} ${response.statusText}): ${errorBody}`
-    );
+  // Deduplicate in-flight token requests to eliminate the thundering herd problem
+  if (activeTokenPromise) {
+    return activeTokenPromise;
   }
 
-  const data = (await response.json()) as {
-    token_type: string;
-    expires_in: number;
-    access_token: string;
-  };
+  activeTokenPromise = (async () => {
+    try {
+      const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 
-  cachedToken = {
-    accessToken: data.access_token,
-    expiresAt: now + data.expires_in * 1000,
-  };
+      const params = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope: "https://graph.microsoft.com/.default",
+        grant_type: "client_credentials",
+      });
 
-  return data.access_token;
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(
+          `Azure AD token request failed (${response.status} ${response.statusText}): ${errorBody}`
+        );
+      }
+
+      const data = (await response.json()) as {
+        token_type: string;
+        expires_in: number;
+        access_token: string;
+      };
+
+      cachedToken = {
+        accessToken: data.access_token,
+        expiresAt: Date.now() + data.expires_in * 1000,
+      };
+
+      return data.access_token;
+    } finally {
+      activeTokenPromise = null;
+    }
+  })();
+
+  return activeTokenPromise;
 }

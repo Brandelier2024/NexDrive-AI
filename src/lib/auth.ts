@@ -36,13 +36,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        const email = credentials?.email as string;
+        const rawEmail = credentials?.email as string;
         const password = credentials?.password as string;
 
-        if (!email || !password) return null;
+        if (!rawEmail || !password) return null;
+        const normalizedEmail = rawEmail.trim().toLowerCase();
 
         // Enforce company email domain
-        if (!isCompanyEmail(email)) {
+        if (!isCompanyEmail(normalizedEmail)) {
           throw new Error("INVALID_DOMAIN");
         }
 
@@ -51,12 +52,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // Look up user in Supabase
         const { data: user, error } = await supabase
           .from("users")
-          .select("*")
-          .eq("email", email.toLowerCase())
+          .select("id, name, email, password_hash, auth_provider, avatar_url")
+          .eq("email", normalizedEmail)
           .single();
 
         if (error || !user) {
           throw new Error("USER_NOT_FOUND");
+        }
+
+        // Prevent null password hash crash for SSO-created accounts
+        if (!user.password_hash) {
+          throw new Error("USE_SSO_LOGIN");
         }
 
         // Verify password
@@ -82,32 +88,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return "/auth/error?error=INVALID_DOMAIN";
         }
 
-        // Auto-create user in Supabase if not exists (SSO provisioning)
+        // Atomic SSO provisioning via upsert to eliminate TOCTOU race condition
         const supabase = createServerSupabaseClient();
-        const { data: existingUser } = await supabase
-          .from("users")
-          .select("id")
-          .eq("email", user.email.toLowerCase())
-          .single();
+        const normalizedEmail = user.email.toLowerCase().trim();
 
-        if (!existingUser) {
-          const { data: newUser } = await supabase
-            .from("users")
-            .insert({
-              email: user.email.toLowerCase(),
-              name: user.name ?? user.email.split("@")[0],
+        const { data: provisionedUser, error: upsertError } = await supabase
+          .from("users")
+          .upsert(
+            {
+              email: normalizedEmail,
+              name: user.name ?? normalizedEmail.split("@")[0],
               avatar_url: user.image ?? null,
               auth_provider: "azure-ad",
-            })
-            .select("id")
-            .single();
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "email" }
+          )
+          .select("id")
+          .single();
 
-          if (newUser) {
-            user.id = newUser.id;
-          }
-        } else {
-          user.id = existingUser.id;
+        if (upsertError || !provisionedUser) {
+          console.error("[SSO Provisioning Error]:", upsertError);
+          return "/auth/error?error=PROVISIONING_FAILED";
         }
+
+        user.id = provisionedUser.id;
       }
 
       return true;

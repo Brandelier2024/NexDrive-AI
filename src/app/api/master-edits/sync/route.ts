@@ -88,8 +88,10 @@ export async function POST() {
       }
     }
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Sync failed";
     console.error("[MasterEdits API Error]:", err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Master Edits synchronization failed. Please check server logs for details." },
+      { status: 500 }
+    );
   }
 }

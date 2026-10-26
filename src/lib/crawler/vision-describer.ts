@@ -62,8 +62,10 @@ export async function describeThumbnail(
   }
 
   try {
-    // 1. Fetch thumbnail image bytes
-    const imgRes = await fetch(thumbnailUrl);
+    // 1. Fetch thumbnail image bytes with 10s timeout
+    const imgRes = await fetch(thumbnailUrl, {
+      signal: AbortSignal.timeout(10000),
+    });
     if (!imgRes.ok) {
       return generateFallbackMetadata(fileName, folderPath);
     }

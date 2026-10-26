@@ -9,8 +9,9 @@ import { crawlOneDriveDelta } from "./onedrive-crawler";
 import { isAzureConfigured } from "@/lib/graph/auth";
 import { isGeminiConfigured } from "./vision-describer";
 
-// In-memory fallback cache for development when Supabase is not yet set up
-let inMemoryStore: OneDriveRecord[] = [];
+// Bounded in-memory fallback store (capped to 500 items, O(1) lookups)
+const MAX_FALLBACK_ITEMS = 500;
+const inMemoryStore = new Map<string, OneDriveRecord>();
 
 /**
  * Returns currently indexed items (from Supabase, or in-memory fallback)
@@ -31,7 +32,7 @@ export async function getAllIndexedRecords(): Promise<OneDriveRecord[]> {
   }
 
   // Fallback to in-memory store
-  return inMemoryStore;
+  return Array.from(inMemoryStore.values());
 }
 
 /**
@@ -117,14 +118,13 @@ export async function upsertOneDriveRecords(
     console.warn("[Indexer] Supabase connection error:", err);
   }
 
-  // 3. Always maintain in-memory store sync for resilience
+  // 3. Update bounded fallback cache in O(1) without blocking event loop
   for (const newRec of uniqueRecords) {
-    const idx = inMemoryStore.findIndex((r) => r.item_id === newRec.item_id);
-    if (idx >= 0) {
-      inMemoryStore[idx] = newRec;
-    } else {
-      inMemoryStore.push(newRec);
+    if (inMemoryStore.size >= MAX_FALLBACK_ITEMS && !inMemoryStore.has(newRec.item_id)) {
+      const oldestKey = inMemoryStore.keys().next().value;
+      if (oldestKey) inMemoryStore.delete(oldestKey);
     }
+    inMemoryStore.set(newRec.item_id, newRec);
   }
 
   return uniqueRecords.length;
@@ -143,7 +143,9 @@ export async function deleteOneDriveRecords(itemIds: string[]): Promise<number> 
     console.warn("[Indexer] Supabase delete error:", err);
   }
 
-  inMemoryStore = inMemoryStore.filter((r) => !itemIds.includes(r.item_id));
+  for (const id of itemIds) {
+    inMemoryStore.delete(id);
+  }
   return itemIds.length;
 }
 

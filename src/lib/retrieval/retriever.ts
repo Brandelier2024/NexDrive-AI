@@ -53,14 +53,19 @@ ${trimmed}`;
       }, 2000);
     });
 
-    const rewritePromise = ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-      config: {
-        abortSignal: controller.signal,
-        httpOptions: { timeout: 2000 },
-      },
-    });
+    const rewritePromise = ai.models
+      .generateContent({
+        model: modelName,
+        contents: prompt,
+        config: {
+          abortSignal: controller.signal,
+          httpOptions: { timeout: 2000 },
+        },
+      })
+      .catch((err) => {
+        // Prevent unhandledRejection if timed out or aborted
+        return null;
+      });
 
     let response: Awaited<typeof rewritePromise> | null = null;
     try {
@@ -377,18 +382,19 @@ export async function searchOneDriveItems(
       // Child expansion for matched folders in temporal search
       if (matchedRecords.length > 0) {
         const foldersFound = matchedRecords.filter((r) => r.record_type === "folder");
-        for (const folder of foldersFound) {
+        if (foldersFound.length > 0) {
+          const folderIds = foldersFound.map((f) => f.item_id);
           let childQuery = supabase
             .from("onedrive_items")
             .select("*")
-            .eq("parent_folder_id", folder.item_id)
+            .in("parent_folder_id", folderIds)
             .neq("record_type", "folder");
 
           if (temporal.mediaType) {
             childQuery = childQuery.eq("record_type", temporal.mediaType);
           }
 
-          const { data: children } = await childQuery.limit(5);
+          const { data: children } = await childQuery.limit(topK * 2);
           if (children) {
             for (const child of children) {
               if (!seenIds.has(child.item_id)) {
@@ -497,13 +503,14 @@ export async function searchOneDriveItems(
     // Child expansion ONLY on legitimately matched folders
     if (matchedRecords.length > 0) {
       const foldersFound = matchedRecords.filter((r) => r.record_type === "folder");
-      for (const folder of foldersFound) {
+      if (foldersFound.length > 0) {
+        const folderIds = foldersFound.map((f) => f.item_id);
         const { data: children } = await supabase
           .from("onedrive_items")
           .select("*")
-          .eq("parent_folder_id", folder.item_id)
+          .in("parent_folder_id", folderIds)
           .neq("record_type", "folder")
-          .limit(6);
+          .limit(topK * 2);
 
         if (children && children.length > 0) {
           for (const child of children) {

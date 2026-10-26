@@ -18,7 +18,7 @@ function getIsMobileServerSnapshot() {
   return false;
 }
 
-const emptySubscribe = () => () => {};
+const emptySubscribe = () => () => { };
 function getIsMountedSnapshot() {
   return true;
 }
@@ -596,8 +596,8 @@ export default function ChatUI({ user }: ChatUIProps) {
                         : "rgba(99, 102, 241, 0.12)",
                     color: syncStatus?.mode === "live" ? "#059669" : "#4f46e5",
                     border: `1px solid ${syncStatus?.mode === "live"
-                        ? "rgba(16, 185, 129, 0.25)"
-                        : "rgba(99, 102, 241, 0.25)"
+                      ? "rgba(16, 185, 129, 0.25)"
+                      : "rgba(99, 102, 241, 0.25)"
                       }`,
                   }}
                 >
@@ -1490,7 +1490,7 @@ export default function ChatUI({ user }: ChatUIProps) {
                       ) : (
                         <>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+                            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
                           </svg>
                           Suggested Topics
                         </>
@@ -2640,7 +2640,7 @@ function MarkdownRenderer({ content }: { content: string }) {
   );
 }
 
-function parseMarkdownToHtml(text: string): string {
+export function parseMarkdownToHtml(text: string): string {
   let html = text
     // Escape HTML tags to prevent XSS
     .replace(/&/g, "&amp;")
@@ -2659,7 +2659,9 @@ function parseMarkdownToHtml(text: string): string {
     (match, linkText, url) => {
       const cleanUrl = url.trim();
       if (/^https?:\/\//i.test(cleanUrl) || (cleanUrl.startsWith("/") && !cleanUrl.startsWith("//") && !cleanUrl.includes("\\"))) {
-        return `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" style="color: #4f46e5; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;">${linkText} ↗</a>`;
+        const safeUrl = cleanUrl.replace(/"/g, "&quot;");
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color: #4f46e5; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;">${linkText} ↗</a>`;
+
       }
       return linkText;
     }

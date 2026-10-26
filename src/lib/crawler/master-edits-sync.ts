@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import { config } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
+import { getGraphAccessToken } from "@/lib/graph/auth";
 import {
   extractCell,
   extractHeaderCell,
@@ -71,31 +72,14 @@ export async function syncMasterEditsSheet(): Promise<MasterEditsSyncResult> {
   const startTime = Date.now();
   const sheetsProcessed: string[] = [];
 
-  // 1. Authenticate with Azure AD
-  const tokenUrl = `https://login.microsoftonline.com/${config.azure.tenantId}/oauth2/v2.0/token`;
-  const params = new URLSearchParams({
-    client_id: config.azure.clientId,
-    client_secret: config.azure.clientSecret,
-    scope: "https://graph.microsoft.com/.default",
-    grant_type: "client_credentials",
-  });
+  // 1. Authenticate with Azure AD via cached, deduplicated single-flight token provider
+  const access_token = await getGraphAccessToken();
 
-  const tokenRes = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
-
-  if (!tokenRes.ok) {
-    throw new Error(`Failed to obtain Azure token: ${tokenRes.status} ${await tokenRes.text()}`);
-  }
-
-  const { access_token } = await tokenRes.json();
-
-  // 2. Download Live Workbook Content
+  // 2. Download Live Workbook Content with 30s timeout guard
   const contentUrl = `https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/items/${ITEM_ID}/content`;
   const fileRes = await fetch(contentUrl, {
     headers: { Authorization: `Bearer ${access_token}` },
+    signal: AbortSignal.timeout(30000),
   });
 
   if (!fileRes.ok) {

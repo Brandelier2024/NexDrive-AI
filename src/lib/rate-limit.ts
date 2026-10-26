@@ -136,11 +136,6 @@ export function getClientIp(req: Request): string {
     return cfConnectingIp;
   }
 
-  const realIp = req.headers.get("x-real-ip")?.trim();
-  if (realIp && isValidIp(realIp)) {
-    return realIp;
-  }
-
   // 3. Fall back to right-most x-forwarded-for entry appended by trusted proxy
   const forwardedFor = req.headers.get("x-forwarded-for");
   if (forwardedFor) {
@@ -148,6 +143,14 @@ export function getClientIp(req: Request): string {
     const candidate = parts[parts.length - 1];
     if (candidate && isValidIp(candidate)) {
       return candidate;
+    }
+  }
+
+  // 4. Accept x-real-ip only when explicitly configured behind a trusted local reverse proxy (TRUST_PROXY=true)
+  if (process.env.TRUST_PROXY === "true") {
+    const realIp = req.headers.get("x-real-ip")?.trim();
+    if (realIp && isValidIp(realIp)) {
+      return realIp;
     }
   }
 

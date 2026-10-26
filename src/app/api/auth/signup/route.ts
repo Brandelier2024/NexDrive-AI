@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { isCompanyEmail } from "@/lib/config";
+import { config, isCompanyEmail } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { verifyOtp } from "@/lib/email";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     if (!isCompanyEmail(normalizedEmail)) {
       return NextResponse.json(
         {
-          error: `Only company email addresses are allowed. Please use your @${process.env.ALLOWED_EMAIL_DOMAIN || "brandelier.in"} email.`,
+          error: `Only company email addresses are allowed. Please use your @${config.auth.allowedEmailDomain} email.`,
         },
         { status: 403 }
       );
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
     const { data: existingUser } = await supabase
       .from("users")
       .select("id")
-      .eq("email", email.toLowerCase())
+      .eq("email", normalizedEmail)
       .single();
 
     if (existingUser) {
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
       .from("users")
       .insert({
         name: name.trim(),
-        email: email.toLowerCase().trim(),
+        email: normalizedEmail,
         password_hash: passwordHash,
         auth_provider: "credentials",
       })
@@ -108,6 +108,12 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (insertError) {
+      if (insertError.code === "23505") {
+        return NextResponse.json(
+          { error: "An account with this email already exists. Please sign in." },
+          { status: 409 }
+        );
+      }
       console.error("Supabase insert error:", insertError);
       return NextResponse.json(
         { error: "Failed to create account. Please try again." },

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isCompanyEmail } from "@/lib/config";
+import { config, isCompanyEmail } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { generateOtpCode, storeOtp, sendVerificationEmail } from "@/lib/email";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
 
     // 1. Enforce corporate email domain
     if (!isCompanyEmail(normalizedEmail)) {
-      const domain = process.env.ALLOWED_EMAIL_DOMAIN || "brandelier.in";
+      const domain = config.auth.allowedEmailDomain;
       return NextResponse.json(
         { error: `Only company email addresses are allowed. Please use your @${domain} email.` },
         { status: 403 }
@@ -75,11 +75,10 @@ export async function POST(req: NextRequest) {
       // ignore
     }
 
-    // 3. Generate 6-digit OTP code and store
+    // 3. Generate 6-digit OTP code
     const code = generateOtpCode();
-    await storeOtp(normalizedEmail, code);
 
-    // 4. Send email
+    // 4. Send email FIRST before committing OTP to database
     const sendResult = await sendVerificationEmail(normalizedEmail, code);
 
     if (!sendResult.success) {
@@ -89,6 +88,9 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+
+    // 5. Commit to database only upon confirmed email delivery
+    await storeOtp(normalizedEmail, code);
 
     return NextResponse.json({
       success: true,

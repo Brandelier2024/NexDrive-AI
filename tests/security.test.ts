@@ -10,6 +10,7 @@ import {
 } from "@/lib/generation/rag-chain";
 import { rewriteQuery } from "@/lib/retrieval/retriever";
 import { isPublicPath } from "@/middleware";
+import { parseMarkdownToHtml } from "@/app/chat-ui";
 import { GoogleGenAI } from "@google/genai";
 import { OneDriveRecord } from "@/lib/types";
 
@@ -453,6 +454,32 @@ describe("7. Middleware Public Path Bypass & Route Protection", () => {
     assert.equal(isPublicPath("/images/logo.png"), true);
     assert.equal(isPublicPath("/static/banner.jpg"), true);
     assert.equal(isPublicPath("/assets/icon.svg"), true);
+  });
+});
+
+describe("8. Chat Markdown HTML Rendering & XSS Attribute Injection Defense", () => {
+  it("should escape double quotes in URLs to prevent HTML attribute breakout", () => {
+    const maliciousInput = '[Exploit](https://example.com" onmouseover="evil)';
+    const rendered = parseMarkdownToHtml(maliciousInput);
+    // Double quotes must be escaped to &quot; so attribute breakout is prevented
+    assert.ok(rendered.includes('href="https://example.com&quot; onmouseover=&quot;evil"'));
+    assert.ok(!rendered.includes('href="https://example.com" onmouseover="evil"'));
+  });
+
+  it("should strip dangerous URI protocols such as javascript: and data:", () => {
+    const jsInput = "[Malicious](javascript:evilFunc)";
+    assert.equal(parseMarkdownToHtml(jsInput), "Malicious");
+
+    const dataInput = "[Malicious](data:text/html;base64,PHNjcmlwdD4)";
+    assert.equal(parseMarkdownToHtml(dataInput), "Malicious");
+  });
+
+  it("should render legitimate https and relative links properly", () => {
+    const validHttp = "[Search](https://google.com)";
+    assert.ok(parseMarkdownToHtml(validHttp).includes('href="https://google.com"'));
+
+    const validRelative = "[Local](/dashboard/docs)";
+    assert.ok(parseMarkdownToHtml(validRelative).includes('href="/dashboard/docs"'));
   });
 });
 

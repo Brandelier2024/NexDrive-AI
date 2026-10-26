@@ -105,13 +105,17 @@ export function isSharedDataStorageAccount(email: string): boolean {
 }
 
 const SHARED_STORAGE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours for enterprise shared storage
-const activeBackgroundSyncs = new Set<string>();
+const activeBackgroundSyncs = new Map<string, number>();
+const BACKGROUND_SYNC_TIMEOUT_MS = 60 * 1000; // 1 minute expiration
 
 /**
  * Fetches all items from an employee's personal OneDrive or corporate data storage account via Microsoft Graph /delta
  * with automatic pagination, request timeout, and cache eviction.
  */
-async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]> {
+async function fetchUserDriveItems(
+  userEmail: string,
+  bypassRevalidation: boolean = false
+): Promise<GraphDriveItem[]> {
   if (!userEmail || typeof userEmail !== "string") {
     throw new Error("Invalid user email provided for OneDrive retrieval");
   }
@@ -151,10 +155,15 @@ async function fetchUserDriveItems(userEmail: string): Promise<GraphDriveItem[]>
 
   // Stale-While-Revalidate: For shared storage drives, serve existing cached data instantly
   // even if expired, and trigger revalidation in the background so search is never blocked.
-  if (cached && isSharedStorage && cached.items.length > 0) {
-    if (!activeBackgroundSyncs.has(normalizedEmail)) {
-      activeBackgroundSyncs.add(normalizedEmail);
-      fetchUserDriveItems(normalizedEmail)
+  if (cached && isSharedStorage && cached.items.length > 0 && !bypassRevalidation) {
+    const lastSync = activeBackgroundSyncs.get(normalizedEmail);
+    const isSyncActive = lastSync !== undefined && now - lastSync < BACKGROUND_SYNC_TIMEOUT_MS;
+    if (!isSyncActive) {
+      activeBackgroundSyncs.set(normalizedEmail, now);
+      fetchUserDriveItems(normalizedEmail, true)
+        .then((items) => {
+          console.log(`[Personal OneDrive] Revalidated ${items.length} items for ${normalizedEmail}`);
+        })
         .catch((e) => console.warn(`[Personal OneDrive] Background revalidation failed for ${normalizedEmail}:`, e))
         .finally(() => activeBackgroundSyncs.delete(normalizedEmail));
     }
@@ -253,13 +262,7 @@ export async function searchPersonalOneDrive(
   }
 
   const normalizedEmail = userEmail.toLowerCase().trim();
-  let items: GraphDriveItem[] = [];
-  try {
-    items = await fetchUserDriveItems(normalizedEmail);
-  } catch {
-    console.warn(`[Personal OneDrive] Search failed for ${normalizedEmail}; returning empty results.`);
-    return [];
-  }
+  const items = await fetchUserDriveItems(normalizedEmail);
 
   if (!items || items.length === 0) {
     return [];
@@ -432,10 +435,13 @@ export function warmupSharedDataStorage(): void {
   if (!isAzureConfigured()) {
     return;
   }
+  const now = Date.now();
   for (const acc of SHARED_DATA_STORAGE_ACCOUNTS) {
     const norm = acc.toLowerCase();
-    if (!userDriveCache.has(norm) && !activeBackgroundSyncs.has(norm)) {
-      activeBackgroundSyncs.add(norm);
+    const lastSync = activeBackgroundSyncs.get(norm);
+    const isSyncActive = lastSync !== undefined && now - lastSync < BACKGROUND_SYNC_TIMEOUT_MS;
+    if (!userDriveCache.has(norm) && !isSyncActive) {
+      activeBackgroundSyncs.set(norm, now);
       fetchUserDriveItems(norm)
         .then(() => console.log(`[Shared Storage] Cache warmed up for ${acc}`))
         .catch((err) => console.warn(`[Shared Storage] Warmup failed for ${acc}:`, err))

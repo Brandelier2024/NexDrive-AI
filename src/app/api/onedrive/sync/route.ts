@@ -11,7 +11,6 @@ export const maxDuration = 300;
 
 const LOCK_ID = "onedrive_sync_lock";
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
-let fallbackLocalLock = false;
 
 export async function POST() {
   try {
@@ -62,15 +61,14 @@ export async function POST() {
       }
       acquiredViaDb = true;
     } catch (dbLockErr) {
-      console.warn("[Sync API] Distributed lock acquisition via Supabase failed; falling back to local lock:", dbLockErr);
-      // Fallback to process lock if Supabase table is unreachable
-      if (fallbackLocalLock) {
-        return NextResponse.json(
-          { success: false, error: "A sync is already actively running. Please wait for it to finish." },
-          { status: 429 }
-        );
-      }
-      fallbackLocalLock = true;
+      console.error("[Sync API] Distributed lock acquisition via Supabase failed:", dbLockErr);
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Unable to verify synchronization lock status. Please check database connectivity.",
+        },
+        { status: 503 }
+      );
     }
 
     try {
@@ -91,13 +89,11 @@ export async function POST() {
           console.error("[Sync API Error] Failed to release db lock:", releaseErr);
         }
       }
-      fallbackLocalLock = false;
     }
   } catch (error: unknown) {
     console.error("[Sync API Error]:", error);
-    const message = error instanceof Error ? error.message : "Sync failed";
     return NextResponse.json(
-      { success: false, error: message },
+      { success: false, error: "Synchronization failed. Please check server logs for details." },
       { status: 500 }
     );
   }

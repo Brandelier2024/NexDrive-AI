@@ -33,9 +33,9 @@ export async function GET() {
 
     return NextResponse.json({ user: userRecord });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Failed to fetch profile.";
+    console.error("[Profile API Error]:", error);
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to fetch profile. Please try again later." },
       { status: 500 }
     );
   }

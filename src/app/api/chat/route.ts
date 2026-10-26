@@ -9,6 +9,7 @@ import {
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 
 // Asynchronously warm up the 17,500 shared storage files so user searches don't hit cold fetches
 if (process.env.NODE_ENV !== "test" && process.env.NEXT_PHASE !== "phase-production-build") {
@@ -24,12 +25,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const userEmail = session.user.email?.toLowerCase().trim();
+    const clientIp = getClientIp(req);
+    const rateLimitIdentifier = userEmail || session.user.id || clientIp;
+
+    // Rate Limiting: 20 search requests / 1 minute per user/client
+    const chatLimit = checkRateLimit(`chat:${rateLimitIdentifier}`, {
+      windowMs: 60 * 1000,
+      max: 20,
+    });
+    if (!chatLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many search requests. Please wait a moment before sending another query." },
+        {
+          status: 429,
+          headers: { "Retry-After": String(chatLimit.retryAfterSeconds) },
+        }
+      );
+    }
+
     const body = (await req.json()) as ChatRequest;
     const { message, chat_history = [], session_id = "default", scope = "all" } = body;
 
     if (!message || typeof message !== "string" || !message.trim()) {
       return NextResponse.json(
         { error: "Message is required" },
+        { status: 400 }
+      );
+    }
+
+    const trimmedMessage = message.trim();
+
+    // Enforce 2,000 character maximum query length
+    if (trimmedMessage.length > 2000) {
+      return NextResponse.json(
+        { error: "Query exceeds the maximum allowed length of 2,000 characters." },
         { status: 400 }
       );
     }
@@ -41,11 +71,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const trimmedMessage = message.trim();
-    const userEmail = session.user.email?.toLowerCase().trim();
+    // Bound conversation history to last 10 turns to prevent payload bloating
+    const boundedHistory = Array.isArray(chat_history) ? chat_history.slice(-10) : [];
 
     // 1. Rewrite multi-turn conversational query
-    const rewrittenQuery = await rewriteQuery(trimmedMessage, chat_history);
+    const rewrittenQuery = await rewriteQuery(trimmedMessage, boundedHistory);
 
     // Validate email requirement for personal searches before dispatching
     if (scope === "personal" && !userEmail) {
@@ -103,20 +133,17 @@ export async function POST(req: Request) {
       folderCards
     );
 
-    // 4. Save chat message to Supabase if available
+    // 4. Save chat message to Supabase if available and user exists in database
     try {
       const supabase = createServerSupabaseClient();
       let userId: string | null = null;
-      if (session.user.email) {
+      if (userEmail) {
         const { data: u } = await supabase
           .from("users")
           .select("id")
-          .eq("email", session.user.email.toLowerCase().trim())
+          .eq("email", userEmail)
           .single();
         if (u) userId = u.id;
-      }
-      if (!userId && session.user.id) {
-        userId = session.user.id;
       }
 
       if (userId) {

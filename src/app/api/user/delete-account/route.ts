@@ -74,15 +74,37 @@ export async function DELETE() {
 
     console.log(`[Delete Account] Successfully deleted user account: user ID ${canonicalUserId}`);
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       message: "Account and associated data deleted successfully.",
     });
+
+    const cookieNames = [
+      "authjs.session-token",
+      "__Secure-authjs.session-token",
+      "next-auth.session-token",
+      "__Secure-next-auth.session-token",
+      "authjs.csrf-token",
+      "__Host-authjs.csrf-token",
+      "next-auth.csrf-token",
+      "authjs.callback-url",
+      "next-auth.callback-url",
+    ];
+
+    for (const name of cookieNames) {
+      response.cookies.delete(name);
+      response.cookies.set(name, "", {
+        maxAge: 0,
+        path: "/",
+        expires: new Date(0),
+      });
+    }
+
+    return response;
   } catch (error: unknown) {
     console.error("[Delete Account Error]:", error);
-    const message = error instanceof Error ? error.message : "Failed to delete account.";
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to delete account. Please try again later." },
       { status: 500 }
     );
   }

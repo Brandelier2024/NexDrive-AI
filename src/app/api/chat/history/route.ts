@@ -132,12 +132,13 @@ export async function GET(req: Request) {
 
       pagedSessionIds = sessionOrder;
     } else {
-      // Fallback: Fetch session entries if RPC is not available in database
+      // Fallback: Fetch recent session entries if RPC is not available in database (bounded to 1000 messages)
       const { data: sessionEntries, error: sessionsError } = await supabase
         .from("chat_messages")
         .select("session_id, created_at")
         .eq("user_id", userId)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(1000);
 
       if (sessionsError) {
         console.error("[Chat History] Error fetching sessions:", sessionsError);
@@ -213,42 +214,32 @@ export async function GET(req: Request) {
         }
       }
 
-      // 3. Address any sessions whose messages were truncated by PostgREST row limits
+      // 3. Batch resolution for any sessions whose messages were truncated
       const missingSessions = pagedSessionIds.filter((id) => {
         const s = sessionsMap.get(id);
         return s && (!s.lastMessage || s.title === "New Conversation");
       });
 
-      if (missingSessions.length > 0 && missingSessions.length <= 20) {
-        await Promise.all(
-          missingSessions.map(async (sId) => {
-            const s = sessionsMap.get(sId);
-            if (!s) return;
-            if (!s.lastMessage) {
-              const { data: lastOne } = await supabase
-                .from("chat_messages")
-                .select("content")
-                .eq("user_id", userId)
-                .eq("session_id", sId)
-                .order("created_at", { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              if (lastOne?.content) s.lastMessage = lastOne.content;
+      if (missingSessions.length > 0) {
+        // Fetch all relevant messages for missing sessions in ONE single batched query
+        const { data: batchMessages } = await supabase
+          .from("chat_messages")
+          .select("session_id, role, content, created_at")
+          .eq("user_id", userId)
+          .in("session_id", missingSessions)
+          .order("created_at", { ascending: true });
+
+        if (batchMessages && batchMessages.length > 0) {
+          for (const msg of batchMessages) {
+            const s = sessionsMap.get(msg.session_id);
+            if (!s) continue;
+
+            if (msg.role === "user" && s.title === "New Conversation") {
+              s.title = msg.content;
             }
-            if (s.title === "New Conversation") {
-              const { data: firstOne } = await supabase
-                .from("chat_messages")
-                .select("content")
-                .eq("user_id", userId)
-                .eq("session_id", sId)
-                .eq("role", "user")
-                .order("created_at", { ascending: true })
-                .limit(1)
-                .maybeSingle();
-              if (firstOne?.content) s.title = firstOne.content;
-            }
-          })
-        );
+            s.lastMessage = msg.content;
+          }
+        }
       }
 
       // Ensure fallback values are populated if only one of title/lastMessage exists
@@ -440,9 +431,8 @@ export async function GET(req: Request) {
     });
   } catch (error: unknown) {
     console.error("[Chat History Error]:", error);
-    const message = error instanceof Error ? error.message : "Failed to load chat history";
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to load chat history. Please try again later." },
       { status: 500 }
     );
   }
@@ -456,7 +446,15 @@ export async function DELETE(req: Request) {
     }
 
     const { searchParams } = new URL(req.url);
-    const sessionId = searchParams.get("sessionId");
+    const sessionId = searchParams.get("sessionId")?.trim();
+
+    // Prevent accidental bulk wipe: require explicit parameter
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: "A valid sessionId or 'all' is required to delete chat history." },
+        { status: 400 }
+      );
+    }
 
     const supabase = createServerSupabaseClient();
     let userId: string | null = null;
@@ -480,7 +478,7 @@ export async function DELETE(req: Request) {
 
     let deleteQuery = supabase.from("chat_messages").delete().eq("user_id", userId);
 
-    if (sessionId && sessionId !== "all") {
+    if (sessionId !== "all") {
       deleteQuery = deleteQuery.eq("session_id", sessionId);
     }
 
@@ -497,9 +495,8 @@ export async function DELETE(req: Request) {
     });
   } catch (error: unknown) {
     console.error("[Chat History Delete Error]:", error);
-    const message = error instanceof Error ? error.message : "Failed to delete chat history";
     return NextResponse.json(
-      { error: message },
+      { error: "Failed to delete chat history. Please try again later." },
       { status: 500 }
     );
   }

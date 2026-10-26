@@ -3,8 +3,9 @@
 -- Run this SQL in your Supabase SQL Editor
 -- ============================================================
 
--- Enable pgvector extension (for later vector indexing phases)
+-- Enable pgvector and pg_trgm extensions
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ────────────────────────────────────────────────
 -- 1. Users table (for credentials auth)
@@ -64,7 +65,14 @@ CREATE TABLE IF NOT EXISTS onedrive_items (
 -- Indexes for search and lookups
 CREATE INDEX IF NOT EXISTS idx_onedrive_items_item_id ON onedrive_items(item_id);
 CREATE INDEX IF NOT EXISTS idx_onedrive_items_record_type ON onedrive_items(record_type);
-CREATE INDEX IF NOT EXISTS idx_onedrive_items_folder_path ON onedrive_items(folder_path);
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_parent_folder_record ON onedrive_items(parent_folder_id, record_type);
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_last_modified ON onedrive_items(last_modified DESC);
+
+-- Trigram GIN indexes for fast pattern matching and substring searches (ILIKE '%keyword%')
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_name_trgm ON onedrive_items USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_folder_path_trgm ON onedrive_items USING gin (folder_path gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_visual_summary_trgm ON onedrive_items USING gin (visual_summary gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_onedrive_items_visual_tags_trgm ON onedrive_items USING gin (visual_tags gin_trgm_ops);
 
 -- ────────────────────────────────────────────────
 -- 3. Chat history (Phase 4)
@@ -80,6 +88,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_session ON chat_messages(user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_session_created ON chat_messages(user_id, session_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_created ON chat_messages(user_id, created_at DESC);
 
 -- ────────────────────────────────────────────────
 -- 4. Delta sync state
