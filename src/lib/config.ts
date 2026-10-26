@@ -3,10 +3,18 @@
 export const config = {
   // Azure AD / Microsoft Graph
   azure: {
-    tenantId: process.env.AZURE_TENANT_ID ?? "",
-    clientId: process.env.AZURE_CLIENT_ID ?? "",
-    clientSecret: process.env.AZURE_CLIENT_SECRET ?? "",
-    driveId: process.env.ONEDRIVE_DRIVE_ID ?? "",
+    get tenantId(): string {
+      return process.env.AZURE_TENANT_ID ?? "";
+    },
+    get clientId(): string {
+      return process.env.AZURE_CLIENT_ID ?? "";
+    },
+    get clientSecret(): string {
+      return process.env.AZURE_CLIENT_SECRET ?? "";
+    },
+    get driveId(): string {
+      return process.env.ONEDRIVE_DRIVE_ID ?? "";
+    },
   },
 
   // Auth
@@ -23,7 +31,9 @@ export const config = {
       }
       return secret;
     },
-    allowedEmailDomain: process.env.ALLOWED_EMAIL_DOMAIN ?? "yourcompany.com",
+    get allowedEmailDomain(): string {
+      return process.env.ALLOWED_EMAIL_DOMAIN ?? "yourcompany.com";
+    },
     get adminEmails(): string[] {
       return (process.env.ADMIN_EMAILS ?? "")
         .split(",")

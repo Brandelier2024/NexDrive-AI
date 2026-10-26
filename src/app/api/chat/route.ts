@@ -5,6 +5,9 @@ import {
   searchPersonalOneDrive,
   searchSharedDataStorage,
   warmupSharedDataStorage,
+  canTriggerAutoSync,
+  recordAutoSyncAttempt,
+  fetchUserDriveItems,
 } from "@/lib/graph/personal-drive";
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
@@ -125,6 +128,23 @@ export async function POST(req: Request) {
       ...sharedStorageRecords,
       ...companyRecords,
     ];
+
+    // Background Auto-Sync Trigger on Miss (0 records):
+    // Triggered ONLY if circuit breaker is healthy and 10-minute cooldown has elapsed.
+    // Never triggered if 429 was hit or timeout occurred (circuit breaker guards this).
+    if (combinedRecords.length === 0) {
+      if (shouldSearchPersonal && userEmail && canTriggerAutoSync(`personal:${userEmail}`)) {
+        recordAutoSyncAttempt(`personal:${userEmail}`);
+        fetchUserDriveItems(userEmail).catch((err) => {
+          console.warn("[Chat API] Background auto-sync failed for personal drive:", err);
+        });
+      }
+      if (shouldSearchShared && canTriggerAutoSync("shared_storage")) {
+        recordAutoSyncAttempt("shared_storage");
+        warmupSharedDataStorage();
+      }
+    }
+
     const folderCards = groupItemsByFolder(combinedRecords);
 
     // 3. Generate answer with strict URL fidelity guardrail

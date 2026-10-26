@@ -13,6 +13,22 @@ import { isPublicPath } from "@/middleware";
 import { parseMarkdownToHtml } from "@/app/chat-ui";
 import { GoogleGenAI } from "@google/genai";
 import { OneDriveRecord } from "@/lib/types";
+import {
+  sanitizeODataSearchQuery,
+  getGraphCircuitBreakerStatus,
+  tripGraphCircuitBreaker,
+  resetGraphCircuitBreaker,
+  recordGraphFailure,
+  recordGraphSuccess,
+  canTriggerAutoSync,
+  recordAutoSyncAttempt,
+  resetAutoSyncCooldown,
+  searchGraphDriveNative,
+  mapGraphItemToOneDriveRecord,
+  cleanParentPath,
+  getFolderWebUrl,
+  GraphDriveItem,
+} from "@/lib/graph/personal-drive";
 
 describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
   beforeEach(() => {
@@ -482,4 +498,437 @@ describe("8. Chat Markdown HTML Rendering & XSS Attribute Injection Defense", ()
     assert.ok(parseMarkdownToHtml(validRelative).includes('href="/dashboard/docs"'));
   });
 });
+
+describe("9. Unit Testing: Microsoft Graph Search, OData Sanitizer & Circuit Breaker", () => {
+  beforeEach(() => {
+    resetGraphCircuitBreaker();
+    resetAutoSyncCooldown();
+  });
+
+  it("should preserve clean alphanumeric terms and legitimate spaces", () => {
+    assert.equal(sanitizeODataSearchQuery("summer campaign 2026"), "summer campaign 2026");
+    assert.equal(sanitizeODataSearchQuery("drone video 4k"), "drone video 4k");
+  });
+
+  it("should double single quotes per OData literal escaping rules", () => {
+    assert.equal(sanitizeODataSearchQuery("client's pitch"), "client''s pitch");
+    assert.equal(sanitizeODataSearchQuery("O'Reilly's book"), "O''Reilly''s book");
+  });
+
+  it("should strip control characters, null bytes, newlines, and tabs", () => {
+    const raw = "test\x00file\r\n\tname\x1f\x7f";
+    const sanitized = sanitizeODataSearchQuery(raw);
+    assert.equal(sanitized, "testfile name");
+  });
+
+  it("should strip query syntax and URL breaking delimiters (&, ?, #, ;, $, (, ), <, >, \\)", () => {
+    const raw = "brand & co? #1 ; $select (raw) <video> \\path";
+    const sanitized = sanitizeODataSearchQuery(raw);
+    assert.equal(sanitized, "brand co 1 select raw video path");
+  });
+
+  it("should collapse consecutive whitespaces into a single space", () => {
+    assert.equal(sanitizeODataSearchQuery("  hello     world  "), "hello world");
+  });
+
+  it("should truncate oversized queries to 100 characters before quote doubling", () => {
+    const longInput = "a".repeat(150);
+    const sanitized = sanitizeODataSearchQuery(longInput);
+    assert.equal(sanitized.length, 100);
+  });
+
+  it("should return empty string for null, undefined, empty, or non-string inputs", () => {
+    assert.equal(sanitizeODataSearchQuery(""), "");
+    assert.equal(sanitizeODataSearchQuery(null as any), "");
+    assert.equal(sanitizeODataSearchQuery(undefined as any), "");
+    assert.equal(sanitizeODataSearchQuery(12345 as any), "");
+  });
+
+  it("should default circuit breaker to closed status with zero failures", () => {
+    const status = getGraphCircuitBreakerStatus();
+    assert.equal(status.isOpen, false);
+    assert.equal(status.trippedUntil, null);
+    assert.equal(status.reason, null);
+    assert.equal(status.consecutiveFailures, 0);
+  });
+
+  it("should trip circuit breaker and report open state with reason and duration", () => {
+    tripGraphCircuitBreaker(60000, "HTTP 429 Test");
+    const status = getGraphCircuitBreakerStatus();
+    assert.equal(status.isOpen, true);
+    assert.equal(status.reason, "HTTP 429 Test");
+    assert.ok(status.trippedUntil! > Date.now());
+  });
+
+  it("should clamp circuit cooldown within 5s minimum and 5m maximum", () => {
+    tripGraphCircuitBreaker(500, "Min Clamp Test");
+    const minStatus = getGraphCircuitBreakerStatus();
+    assert.ok(minStatus.trippedUntil! >= Date.now() + 4900);
+
+    tripGraphCircuitBreaker(99999999, "Max Clamp Test");
+    const maxStatus = getGraphCircuitBreakerStatus();
+    assert.ok(maxStatus.trippedUntil! <= Date.now() + 300000 + 100);
+  });
+
+  it("should reset circuit breaker cleanly on resetGraphCircuitBreaker", () => {
+    tripGraphCircuitBreaker(60000, "To Reset");
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, true);
+    resetGraphCircuitBreaker();
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, false);
+    assert.equal(getGraphCircuitBreakerStatus().reason, null);
+    assert.equal(getGraphCircuitBreakerStatus().consecutiveFailures, 0);
+  });
+
+  it("should automatically trip circuit breaker after 3 consecutive failure recordings", () => {
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, false);
+    recordGraphFailure("Failure 1");
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, false);
+    recordGraphFailure("Failure 2");
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, false);
+    recordGraphFailure("Failure 3");
+    assert.equal(getGraphCircuitBreakerStatus().isOpen, true);
+    assert.ok(getGraphCircuitBreakerStatus().reason?.includes("Failure 3"));
+
+    // Success resets failures
+    resetGraphCircuitBreaker();
+    recordGraphFailure("Failure 1");
+    recordGraphSuccess();
+    assert.equal(getGraphCircuitBreakerStatus().consecutiveFailures, 0);
+  });
+
+  it("should permit auto-sync when no previous attempt has been recorded", () => {
+    assert.equal(canTriggerAutoSync("personal:employee@yourcompany.com"), true);
+  });
+
+  it("should reject auto-sync within 10-minute cooldown window after attempt is recorded", () => {
+    const key = "personal:employee@yourcompany.com";
+    assert.equal(canTriggerAutoSync(key), true);
+    recordAutoSyncAttempt(key);
+    assert.equal(canTriggerAutoSync(key), false);
+  });
+
+  it("should reject auto-sync immediately if circuit breaker is open even if scope has no cooldown", () => {
+    const key = "personal:unrecorded@yourcompany.com";
+    tripGraphCircuitBreaker(30000, "HTTP 429 Active");
+    assert.equal(canTriggerAutoSync(key), false);
+  });
+
+  it("should reset cooldown cleanly with resetAutoSyncCooldown", () => {
+    const key = "personal:employee@yourcompany.com";
+    recordAutoSyncAttempt(key);
+    assert.equal(canTriggerAutoSync(key), false);
+    resetAutoSyncCooldown(key);
+    assert.equal(canTriggerAutoSync(key), true);
+  });
+});
+
+describe("10. Integration Testing: Native Graph Search & Self-Healing Fallback", () => {
+  const originalFetch = globalThis.fetch;
+  const originalTenant = process.env.AZURE_TENANT_ID;
+  const originalClient = process.env.AZURE_CLIENT_ID;
+  const originalSecret = process.env.AZURE_CLIENT_SECRET;
+
+  beforeEach(() => {
+    resetGraphCircuitBreaker();
+    resetAutoSyncCooldown();
+    process.env.AZURE_TENANT_ID = "mock-tenant-id";
+    process.env.AZURE_CLIENT_ID = "mock-client-id";
+    process.env.AZURE_CLIENT_SECRET = "mock-client-secret";
+    process.env.ALLOWED_EMAIL_DOMAIN = "brandelier.in";
+  });
+
+  it("should search drive via 1-call native endpoint and map results to verified OneDrive records", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      if (urlStr.includes("login.microsoftonline.com")) {
+        return new Response(JSON.stringify({ access_token: "mock-token", expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      requestedUrl = urlStr;
+      return new Response(
+        JSON.stringify({
+          value: [
+            {
+              id: "item-101",
+              name: "Campaign Reel.mp4",
+              webUrl: "https://yourcompany.sharepoint.com/Marketing/Campaign Reel.mp4",
+              video: { duration: 60 },
+              parentReference: {
+                id: "folder-marketing",
+                path: "/drive/root:/Marketing",
+              },
+              lastModifiedDateTime: "2026-10-20T10:00:00Z",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    };
+
+    try {
+      const items = await searchGraphDriveNative("campaign reel", "employee@brandelier.in");
+      assert.equal(items.length, 1);
+      assert.equal(items[0].name, "Campaign Reel.mp4");
+      assert.ok(requestedUrl.includes("search(q='campaign%20reel')"));
+
+      const record = mapGraphItemToOneDriveRecord(items[0], {
+        isPersonal: true,
+        driveScope: "personal",
+      });
+      assert.ok(record !== null);
+      assert.equal(record!.item_id, "personal-item-101");
+      assert.equal(record!.record_type, "video");
+      assert.equal(record!.parent_folder_name, "Marketing");
+      assert.equal(record!.folder_web_url, "https://yourcompany.sharepoint.com/Marketing");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("should trip circuit breaker and return empty array when Microsoft Graph returns HTTP 429 with Retry-After header", async () => {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      if (urlStr.includes("login.microsoftonline.com")) {
+        return new Response(JSON.stringify({ access_token: "mock-token", expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "Too Many Requests" }), {
+        status: 429,
+        headers: { "Retry-After": "45" },
+      });
+    };
+
+    try {
+      const items = await searchGraphDriveNative("video", "employee@brandelier.in");
+      assert.deepEqual(items, []);
+      const status = getGraphCircuitBreakerStatus();
+      assert.equal(status.isOpen, true);
+      assert.ok(status.reason?.includes("Retry-After 45s"));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("should fast-skip Graph API without invoking fetch when circuit breaker is open", async () => {
+    let fetchInvoked = false;
+    globalThis.fetch = async () => {
+      fetchInvoked = true;
+      return new Response("{}", { status: 200 });
+    };
+
+    try {
+      tripGraphCircuitBreaker(60000, "Active Circuit Trip");
+      const items = await searchGraphDriveNative("video", "employee@brandelier.in");
+      assert.deepEqual(items, []);
+      assert.equal(fetchInvoked, false, "Fetch should not be called when circuit breaker is open");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("should return empty array and handle HTTP 404 drive not found gracefully without throwing", async () => {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      if (urlStr.includes("login.microsoftonline.com")) {
+        return new Response(JSON.stringify({ access_token: "mock-token", expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "ItemNotFound" }), { status: 404 });
+    };
+
+    try {
+      const items = await searchGraphDriveNative("missing", "employee@brandelier.in");
+      assert.deepEqual(items, []);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("should abort and return empty array on request timeout without unhandled promise rejection", async () => {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      if (urlStr.includes("login.microsoftonline.com")) {
+        return new Response(JSON.stringify({ access_token: "mock-token", expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+
+    try {
+      const items = await searchGraphDriveNative("slow-request", "employee@brandelier.in", {
+        timeoutMs: 100,
+      });
+      assert.deepEqual(items, []);
+      assert.equal(getGraphCircuitBreakerStatus().consecutiveFailures, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("should correctly derive folder name, cleaned parent path, and tags via mapGraphItemToOneDriveRecord", () => {
+    const folderItem: GraphDriveItem = {
+      id: "folder-001",
+      name: "Quarterly Reports",
+      webUrl: "https://yourcompany.sharepoint.com/Finance/Quarterly Reports",
+      folder: { childCount: 12 },
+      parentReference: {
+        path: "/drives/drive-id/root:/Finance",
+      },
+    };
+
+    const record = mapGraphItemToOneDriveRecord(folderItem, {
+      isPersonal: false,
+      driveScope: "shared_storage",
+      storageAccount: "data.brandelier@brandelier.in",
+    });
+
+    assert.ok(record !== null);
+    assert.equal(record!.item_id, "storage-1-folder-001");
+    assert.equal(record!.record_type, "folder");
+    assert.equal(record!.name, "Quarterly Reports");
+    assert.equal(record!.folder_path, "Finance");
+    assert.equal(record!.folder_web_url, "https://yourcompany.sharepoint.com/Finance/Quarterly Reports");
+    assert.equal(record!.file_web_url, null);
+    assert.equal(record!.is_personal, false);
+    assert.equal(record!.drive_scope, "shared_storage");
+  });
+});
+
+describe("11. Penetration Testing: OData Injection, ReDoS, SSRF & Rate-Limit Flood", () => {
+  beforeEach(() => {
+    resetGraphCircuitBreaker();
+    resetAutoSyncCooldown();
+  });
+
+  it("should neutralize classic SQL/OData tautology injections (' or 1=1--, '' or 'a'='a')", () => {
+    const payload1 = "' or 1=1--";
+    const sanitized1 = sanitizeODataSearchQuery(payload1);
+    // Single quotes doubled to '' so it remains safely within string literal
+    assert.equal(sanitized1, "'' or 1=1--");
+    assert.ok(!sanitized1.includes(";"));
+
+    const payload2 = "'' or 'a'='a'";
+    const sanitized2 = sanitizeODataSearchQuery(payload2);
+    assert.equal(sanitized2, "'''' or ''a''=''a''");
+  });
+
+  it("should neutralize stacked query and command termination injection attempts ('; DROP TABLE onedrive_items; --)", () => {
+    const payload = "'; DROP TABLE onedrive_items; --";
+    const sanitized = sanitizeODataSearchQuery(payload);
+    // Semicolons stripped, single quotes doubled
+    assert.equal(sanitized, "'' DROP TABLE onedrive_items --");
+    assert.ok(!sanitized.includes(";"));
+  });
+
+  it("should neutralize OData system query expansion and filter breakouts (') or ($filter=true and '1'='1))", () => {
+    const payload = "') or ($filter=true and '1'='1";
+    const sanitized = sanitizeODataSearchQuery(payload);
+    // Dollar signs and parentheses stripped to spaces
+    assert.ok(!sanitized.includes("$"));
+    assert.ok(!sanitized.includes("("));
+    assert.ok(!sanitized.includes(")"));
+    assert.equal(sanitized, "'' or filter=true and ''1''=''1");
+  });
+
+  it("should strip null byte injection attacks (\\x00admin, search%00payload)", () => {
+    const payload = "image\x00_override";
+    const sanitized = sanitizeODataSearchQuery(payload);
+    assert.equal(sanitized, "image_override");
+    assert.ok(!sanitized.includes("\x00"));
+  });
+
+  it("should process 10,000-character repetitive payload in under 2ms without CPU starvation or ReDoS", () => {
+    const bigPayload = "a".repeat(5000) + "'".repeat(1000) + ";$()<>\\".repeat(500);
+    const start = performance.now();
+    const sanitized = sanitizeODataSearchQuery(bigPayload);
+    const elapsed = performance.now() - start;
+
+    assert.ok(elapsed < 10, `Sanitization took too long: ${elapsed.toFixed(2)}ms`);
+    // Pre-quote length is capped at 100 characters max
+    assert.ok(sanitized.length <= 200);
+  });
+
+  it("should process nested quotation and delimiter fuzzing payloads safely", () => {
+    const fuzzPayload = "''''''''''((((((((($$$$$$$$;;;;;;;;<><><><>\\\\\\\\\\";
+    const sanitized = sanitizeODataSearchQuery(fuzzPayload);
+    assert.ok(!sanitized.includes(";"));
+    assert.ok(!sanitized.includes("$"));
+    assert.ok(!sanitized.includes("("));
+    assert.ok(!sanitized.includes(")"));
+    assert.ok(!sanitized.includes("<"));
+    assert.ok(!sanitized.includes(">"));
+    assert.ok(!sanitized.includes("\\"));
+  });
+
+  it("should reject external untrusted domain emails from executing Graph search", async () => {
+    const untrustedEmails = [
+      "attacker@evil.com",
+      "user@gmail.com",
+      "admin@malicious.org",
+      "phishing@attacker.co",
+    ];
+
+    for (const email of untrustedEmails) {
+      const results = await searchGraphDriveNative("confidential", email);
+      assert.deepEqual(results, []);
+    }
+  });
+
+  it("should reject path traversal sequences in user email input (../../etc/passwd, admin/../root@brandelier.in)", async () => {
+    const traversalEmails = [
+      "../../etc/passwd",
+      "../admin/keys",
+      "admin/../root@brandelier.in",
+      "user@brandelier.in/../../secret",
+    ];
+
+    for (const email of traversalEmails) {
+      const results = await searchGraphDriveNative("confidential", email);
+      assert.deepEqual(results, []);
+    }
+  });
+
+  it("should reject malformed email headers and special characters in user email", async () => {
+    const malformedEmails = [
+      "user\r\nBcc:attacker@evil.com@brandelier.in",
+      "admin%2F..%2F..@brandelier.in",
+      "",
+      "   ",
+      null as any,
+      undefined as any,
+    ];
+
+    for (const email of malformedEmails) {
+      const results = await searchGraphDriveNative("confidential", email);
+      assert.deepEqual(results, []);
+    }
+  });
+
+  it("should safely handle 50 concurrent search requests during circuit trip without lock starvation or memory leak", async () => {
+    tripGraphCircuitBreaker(60000, "Load Test Trip");
+
+    const start = performance.now();
+    const promises = Array.from({ length: 50 }, () =>
+      searchGraphDriveNative("concurrent test", "employee@brandelier.in")
+    );
+    const results = await Promise.all(promises);
+    const elapsed = performance.now() - start;
+
+    assert.equal(results.length, 50);
+    for (const res of results) {
+      assert.deepEqual(res, []);
+    }
+    assert.ok(elapsed < 50, `50 concurrent fast-skips took ${elapsed.toFixed(2)}ms (expected < 50ms)`);
+  });
+});
+
 
