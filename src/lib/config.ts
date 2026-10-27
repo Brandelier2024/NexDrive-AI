@@ -63,7 +63,7 @@ export const config = {
   // Search
   search: {
     topK: parseInt(process.env.TOP_K_MATCHES ?? "8", 10),
-    similarityThreshold: parseFloat(process.env.SIMILARITY_THRESHOLD ?? "0.30"),
+    similarityThreshold: parseFloat(process.env.SIMILARITY_THRESHOLD ?? "0.65"),
   },
 } as const;
 
