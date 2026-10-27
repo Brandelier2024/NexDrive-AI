@@ -169,7 +169,8 @@ export function getGraphCircuitBreakerStatus(): CircuitBreakerStatus {
 }
 
 export function tripGraphCircuitBreaker(cooldownMs: number, reason: string): void {
-  const clampedCooldown = Math.max(5000, Math.min(cooldownMs, 300000)); // 5s to 5m
+  const safeCooldown = Number.isFinite(cooldownMs) ? cooldownMs : 60000;
+  const clampedCooldown = Math.max(5000, Math.min(safeCooldown, 300000)); // 5s to 5m
   circuitOpenUntil = Date.now() + clampedCooldown;
   circuitReason = reason;
 }

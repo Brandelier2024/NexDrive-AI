@@ -570,6 +570,22 @@ describe("9. Unit Testing: Microsoft Graph Search, OData Sanitizer & Circuit Bre
     assert.ok(maxStatus.trippedUntil! <= Date.now() + 300000 + 100);
   });
 
+  it("should handle non-finite cooldownMs values by using safe default cooldown and opening circuit breaker", () => {
+    tripGraphCircuitBreaker(NaN, "NaN Cooldown Test");
+    const nanStatus = getGraphCircuitBreakerStatus();
+    assert.equal(nanStatus.isOpen, true);
+    assert.ok(Number.isFinite(nanStatus.trippedUntil));
+    assert.ok(nanStatus.trippedUntil! >= Date.now() + 59000);
+    assert.ok(nanStatus.trippedUntil! <= Date.now() + 61000);
+
+    tripGraphCircuitBreaker(Infinity, "Infinity Cooldown Test");
+    const infStatus = getGraphCircuitBreakerStatus();
+    assert.equal(infStatus.isOpen, true);
+    assert.ok(Number.isFinite(infStatus.trippedUntil));
+    assert.ok(infStatus.trippedUntil! >= Date.now() + 59000);
+    assert.ok(infStatus.trippedUntil! <= Date.now() + 61000);
+  });
+
   it("should reset circuit breaker cleanly on resetGraphCircuitBreaker", () => {
     tripGraphCircuitBreaker(60000, "To Reset");
     assert.equal(getGraphCircuitBreakerStatus().isOpen, true);
