@@ -7,8 +7,8 @@ export type RecordType = "folder" | "image" | "video";
 /** Raw Microsoft Graph item returned from /delta or drive items API */
 export interface OneDriveGraphItem {
   id: string;
-  name: string;
-  webUrl: string;
+  name?: string;
+  webUrl?: string;
   folder?: {
     childCount?: number;
   };
@@ -32,6 +32,9 @@ export interface OneDriveGraphItem {
   lastModifiedDateTime?: string;
   deleted?: {
     state?: string;
+  };
+  "@removed"?: {
+    reason?: string;
   };
   "@odata.type"?: string;
 }

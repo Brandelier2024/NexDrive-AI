@@ -5,8 +5,8 @@ import { isCompanyEmail } from "@/lib/config";
 
 export interface GraphDriveItem {
   id: string;
-  name: string;
-  webUrl: string;
+  name?: string;
+  webUrl?: string;
   folder?: {
     childCount?: number;
   };
@@ -29,6 +29,13 @@ export interface GraphDriveItem {
     name?: string;
   };
   lastModifiedDateTime?: string;
+  deleted?: {
+    state?: string;
+  };
+  "@removed"?: {
+    reason?: string;
+  };
+  "@odata.type"?: string;
 }
 
 // In-memory cache for user personal drive items (3 minute TTL)
@@ -52,6 +59,7 @@ const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "h
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "wmv", "m4v", "webm"]);
 
 export function determineType(item: GraphDriveItem): RecordType | null {
+  if (!item.name || typeof item.name !== "string") return null;
   if (item.folder) return "folder";
   const ext = item.name.split(".").pop()?.toLowerCase() || "";
   if (item.video || VIDEO_EXTENSIONS.has(ext)) return "video";
@@ -404,7 +412,7 @@ export function mapGraphItemToOneDriveRecord(
 
   const isFolder = type === "folder";
   const folderPath = cleanParentPath(item.parentReference?.path);
-  const folderName = isFolder ? item.name : folderPath.split("/").pop() || (options.isPersonal ? "Personal OneDrive" : "Shared Storage");
+  const folderName = isFolder ? (item.name || "Untitled") : folderPath.split("/").pop() || (options.isPersonal ? "Personal OneDrive" : "Shared Storage");
   const folderWebUrl = getFolderWebUrl(item, isFolder);
   const itemId = options.isPersonal
     ? `personal-${item.id}`
@@ -413,13 +421,13 @@ export function mapGraphItemToOneDriveRecord(
   const storeLabel = options.storageAccount?.includes("2") ? "Data Storage 2" : "Data Storage 1";
   const visualSummary = options.isPersonal
     ? `Personal asset in ${folderPath}`
-    : `[${storeLabel} Asset]: ${folderPath} / ${item.name}`;
+    : `[${storeLabel} Asset]: ${folderPath} / ${item.name || "Untitled"}`;
 
   return {
     item_id: itemId,
     record_type: type,
-    name: item.name,
-    file_web_url: isFolder ? null : item.webUrl,
+    name: item.name || "Untitled",
+    file_web_url: isFolder ? null : (item.webUrl || null),
     parent_folder_id: item.parentReference?.id ?? null,
     parent_folder_name: folderName,
     folder_path: folderPath,
@@ -427,7 +435,7 @@ export function mapGraphItemToOneDriveRecord(
     thumbnail_url: null,
     media_type: isFolder ? null : type,
     visual_summary: visualSummary,
-    visual_tags: `${options.isPersonal ? "personal" : "shared_storage"}, onedrive, ${item.name.toLowerCase()}`,
+    visual_tags: `${options.isPersonal ? "personal" : "shared_storage"}, onedrive, ${(item.name || "").toLowerCase()}`,
     last_modified: item.lastModifiedDateTime || new Date().toISOString(),
     similarity: options.similarity ?? 0.85,
     is_personal: options.isPersonal,
@@ -483,7 +491,7 @@ export function scoreAndFilterDriveItems(
 
   for (const item of items) {
     const type = determineType(item);
-    if (!type) continue;
+    if (!type || !item.name) continue;
 
     const itemName = item.name.toLowerCase();
     const itemPath = cleanParentPath(item.parentReference?.path).toLowerCase();

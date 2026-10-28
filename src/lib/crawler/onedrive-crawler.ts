@@ -15,6 +15,10 @@ const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "wmv", "m4v", "web
  * Determines record type from Graph Item facets and file extension
  */
 export function determineRecordType(item: OneDriveGraphItem): RecordType | null {
+  if (!item.name || typeof item.name !== "string") {
+    return null;
+  }
+
   if (item.folder) {
     return "folder";
   }
@@ -131,10 +135,20 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
   const activeItemsMap = new Map<string, OneDriveGraphItem>();
 
   for (const item of rawItems) {
-    if (item.deleted) {
-      itemIdsToDelete.push(item.id);
-      activeItemsMap.delete(item.id);
-    } else {
+    const isDeleted = Boolean(
+      item.deleted ||
+      item["@removed"] ||
+      item["@odata.type"] === "#microsoft.graph.deleted" ||
+      !item.name ||
+      typeof item.name !== "string"
+    );
+
+    if (isDeleted) {
+      if (item.id) {
+        itemIdsToDelete.push(item.id);
+        activeItemsMap.delete(item.id);
+      }
+    } else if (item.name !== "root") {
       activeItemsMap.set(item.id, item);
     }
   }
@@ -148,20 +162,23 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
   >();
 
   for (const item of activeItems) {
-    if (item.folder) {
+    if (item.folder && item.name) {
       const parentPath = cleanFolderPath(item.parentReference?.path);
       const fullPath = parentPath === "Root" ? item.name : `${parentPath}/${item.name}`;
       folderMap.set(item.id, {
         id: item.id,
         name: item.name,
-        webUrl: item.webUrl,
+        webUrl: item.webUrl || "",
         path: fullPath,
       });
     }
   }
 
   // 4. Process all folders and media items
-  const relevantItems = activeItems.filter((item) => determineRecordType(item) !== null);
+  const relevantItems = activeItems.filter(
+    (item): item is OneDriveGraphItem & { name: string } =>
+      Boolean(item.name) && determineRecordType(item) !== null
+  );
   const recordsToUpsert: OneDriveRecord[] = [];
   const enableVision = config.gemini.enableVisionCaptioning && isGeminiConfigured();
 
@@ -175,10 +192,11 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
           const parentId = item.parentReference?.id ?? null;
           const parentFolderInfo = parentId ? folderMap.get(parentId) : undefined;
           const parentName = parentFolderInfo?.name ?? null;
+          const itemWebUrl = item.webUrl || "";
           const folderWebUrl =
             recordType === "folder"
-              ? item.webUrl
-              : parentFolderInfo?.webUrl || item.webUrl;
+              ? itemWebUrl
+              : parentFolderInfo?.webUrl || itemWebUrl;
 
           const folderPath =
             recordType === "folder"
@@ -203,7 +221,7 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
             item_id: item.id,
             record_type: recordType,
             name: item.name,
-            file_web_url: recordType === "folder" ? null : item.webUrl,
+            file_web_url: recordType === "folder" ? null : itemWebUrl,
             parent_folder_id: parentId,
             parent_folder_name: parentName,
             folder_path: folderPath,
@@ -226,10 +244,11 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
       const parentId = item.parentReference?.id ?? null;
       const parentFolderInfo = parentId ? folderMap.get(parentId) : undefined;
       const parentName = parentFolderInfo?.name ?? null;
+      const itemWebUrl = item.webUrl || "";
       const folderWebUrl =
         recordType === "folder"
-          ? item.webUrl
-          : parentFolderInfo?.webUrl || item.webUrl;
+          ? itemWebUrl
+          : parentFolderInfo?.webUrl || itemWebUrl;
 
       const folderPath =
         recordType === "folder"
@@ -242,7 +261,7 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
         item_id: item.id,
         record_type: recordType,
         name: item.name,
-        file_web_url: recordType === "folder" ? null : item.webUrl,
+        file_web_url: recordType === "folder" ? null : itemWebUrl,
         parent_folder_id: parentId,
         parent_folder_name: parentName,
         folder_path: folderPath,

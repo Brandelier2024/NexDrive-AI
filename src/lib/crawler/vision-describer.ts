@@ -117,19 +117,23 @@ Respond strictly in JSON format without markdown code blocks:
  * Generates natural tags and summary from file and folder name keywords
  */
 export function generateFallbackMetadata(
-  fileName: string,
-  folderPath: string
+  fileName?: string | null,
+  folderPath?: string | null
 ): VisionDescriptionResult {
-  const tags = generateTagsFromNames(fileName, folderPath);
-  const cleanName = fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+  const safeName = typeof fileName === "string" ? fileName : "Untitled";
+  const safePath = typeof folderPath === "string" ? folderPath : "Root";
+  const tags = generateTagsFromNames(safeName, safePath);
+  const cleanName = safeName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
   return {
-    summary: `Media asset "${cleanName}" located in ${folderPath}`,
+    summary: `Media asset "${cleanName}" located in ${safePath}`,
     tags,
   };
 }
 
-export function generateTagsFromNames(fileName: string, folderPath: string): string {
-  const combined = `${folderPath} ${fileName}`
+export function generateTagsFromNames(fileName?: string | null, folderPath?: string | null): string {
+  const safeName = typeof fileName === "string" ? fileName : "";
+  const safePath = typeof folderPath === "string" ? folderPath : "";
+  const combined = `${safePath} ${safeName}`
     .toLowerCase()
     .replace(/\.[^/.]+$/, "") // strip extension
     .replace(/[^a-z0-9]+/g, " ")

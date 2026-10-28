@@ -13,6 +13,8 @@ import { isPublicPath } from "@/middleware";
 import { parseMarkdownToHtml } from "@/app/chat-ui";
 import { GoogleGenAI } from "@google/genai";
 import { OneDriveRecord } from "@/lib/types";
+import { determineRecordType } from "@/lib/crawler/onedrive-crawler";
+import { generateFallbackMetadata, generateTagsFromNames } from "@/lib/crawler/vision-describer";
 import {
   sanitizeODataSearchQuery,
   getGraphCircuitBreakerStatus,
@@ -27,6 +29,7 @@ import {
   mapGraphItemToOneDriveRecord,
   cleanParentPath,
   getFolderWebUrl,
+  determineType,
   GraphDriveItem,
 } from "@/lib/graph/personal-drive";
 
@@ -946,5 +949,87 @@ describe("11. Penetration Testing: OData Injection, ReDoS, SSRF & Rate-Limit Flo
     assert.ok(elapsed < 50, `50 concurrent fast-skips took ${elapsed.toFixed(2)}ms (expected < 50ms)`);
   });
 });
+
+describe("12. Delta Sync Tombstone & Deletion Resiliency", () => {
+  it("should safely return null for items with missing or undefined name without throwing split TypeError", () => {
+    // Tombstone item emitted by Microsoft Graph when item was deleted
+    const tombstoneItem1: any = {
+      id: "del-item-01",
+      deleted: { state: "deleted" },
+    };
+    assert.equal(determineRecordType(tombstoneItem1), null);
+
+    // Delta tombstone with @removed facet and omitted name
+    const tombstoneItem2: any = {
+      id: "del-item-02",
+      "@removed": { reason: "deleted" },
+    };
+    assert.equal(determineRecordType(tombstoneItem2), null);
+
+    // Delta item with file hash but no name (actual Microsoft Graph deletion pattern)
+    const tombstoneItem3: any = {
+      id: "del-item-03",
+      file: { hashes: { quickXorHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAA=" } },
+    };
+    assert.equal(determineRecordType(tombstoneItem3), null);
+
+    // Delta item with folder facet but no name
+    const tombstoneItem4: any = {
+      id: "del-item-04",
+      folder: { childCount: 0 },
+    };
+    assert.equal(determineRecordType(tombstoneItem4), null);
+
+    // Non-string name
+    const malformedItem: any = {
+      id: "bad-item",
+      name: 12345,
+    };
+    assert.equal(determineRecordType(malformedItem), null);
+  });
+
+  it("should correctly classify valid active items", () => {
+    assert.equal(
+      determineRecordType({ id: "folder-1", name: "2026 Campaigns", folder: {} } as any),
+      "folder"
+    );
+    assert.equal(
+      determineRecordType({ id: "img-1", name: "hero.png" } as any),
+      "image"
+    );
+    assert.equal(
+      determineRecordType({ id: "vid-1", name: "promo.mp4" } as any),
+      "video"
+    );
+    assert.equal(
+      determineRecordType({ id: "doc-1", name: "notes.pdf" } as any),
+      null
+    );
+  });
+
+  it("should safely handle personal-drive determineType and mapGraphItemToOneDriveRecord on tombstones", () => {
+    const tombstone: GraphDriveItem = {
+      id: "tombstone-1",
+      deleted: { state: "deleted" },
+    };
+    assert.equal(determineType(tombstone), null);
+
+    const record = mapGraphItemToOneDriveRecord(tombstone, {
+      isPersonal: true,
+      driveScope: "personal",
+    });
+    assert.equal(record, null);
+  });
+
+  it("should safely generate fallback metadata and tags when fileName or folderPath is missing", () => {
+    const meta = generateFallbackMetadata(undefined, undefined);
+    assert.ok(meta.summary.includes("Untitled"));
+    assert.ok(meta.summary.includes("Root"));
+
+    const tags = generateTagsFromNames(undefined, undefined);
+    assert.equal(typeof tags, "string");
+  });
+});
+
 
 
