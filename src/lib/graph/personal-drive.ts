@@ -697,27 +697,15 @@ export async function searchPersonalOneDrive(
     }
   }
 
-  // 2. High-Performance 1-Call Native Microsoft Graph Search (~0.5s)
+  // 2. Fetch drive items via /delta (Application token compatible — /search(q=...) returns 403 on personal drives)
   try {
-    let graphItems: GraphDriveItem[] = [];
-    if (isRecentIntent || !cleanQuery) {
-      graphItems = await fetchRecentGraphDriveItems(normalizedEmail, 10);
-    } else {
-      graphItems = await searchGraphDriveNative(cleanQuery, normalizedEmail, { top: 15 });
+    let items = cached?.items;
+    if (!items || items.length === 0 || now - (cached?.timestamp || 0) >= effectiveTtl) {
+      items = await fetchUserDriveItems(normalizedEmail);
     }
 
-    if (graphItems && graphItems.length > 0) {
-      const records: OneDriveRecord[] = [];
-      for (const item of graphItems) {
-        const rec = mapGraphItemToOneDriveRecord(item, {
-          isPersonal: !isSharedStorage,
-          driveScope: isSharedStorage ? "shared_storage" : "personal",
-          storageAccount: isSharedStorage ? normalizedEmail : undefined,
-          similarity: 0.85,
-        });
-        if (rec) records.push(rec);
-      }
-
+    if (items && items.length > 0) {
+      const records = scoreAndFilterDriveItems(items, cleanQuery, isRecentIntent, normalizedEmail);
       if (records.length > 0) {
         if (isSharedStorage) {
           scheduleBackgroundUpsert(records);
@@ -725,8 +713,8 @@ export async function searchPersonalOneDrive(
         return records;
       }
     }
-  } catch (nativeErr) {
-    console.warn(`[Personal OneDrive] Native Graph search failed for ${normalizedEmail}:`, nativeErr);
+  } catch (driveErr) {
+    console.warn(`[Personal OneDrive] Drive fetch failed for ${normalizedEmail}:`, driveErr);
   }
 
   // 3. Fallback: If cache had any items, check memory cache even if expired
