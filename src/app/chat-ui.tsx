@@ -376,7 +376,7 @@ export default function ChatUI({ user }: ChatUIProps) {
 
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
-    const requestStartTime = performance.now();
+    const requestStartTime = new Date().getTime();
 
     try {
       const historyPayload = messages.map((m) => ({
@@ -400,7 +400,7 @@ export default function ChatUI({ user }: ChatUIProps) {
       }
 
       const data = (await res.json()) as ChatResponse;
-      const clientDuration = Math.round(performance.now() - requestStartTime);
+      const clientDuration = new Date().getTime() - requestStartTime;
       const queryDuration = typeof data.duration_ms === "number" ? data.duration_ms : clientDuration;
 
       const assistantMessage: Message = {

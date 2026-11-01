@@ -11,14 +11,49 @@ import {
 } from "@/lib/graph/personal-drive";
 import { generateRagAnswer } from "@/lib/generation/rag-chain";
 import { createServerSupabaseClient } from "@/lib/supabase";
-import { ChatRequest, ChatResponse, OneDriveRecord } from "@/lib/types";
+import { ChatRequest, ChatResponse, FolderCard, OneDriveRecord } from "@/lib/types";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { getCachedResponse, setCachedResponse } from "@/lib/retrieval/semantic-cache";
 
-// Asynchronously warm up the 17,500 shared storage files so user searches don't hit cold fetches
-if (process.env.NODE_ENV !== "test" && process.env.NEXT_PHASE !== "phase-production-build") {
-  setTimeout(() => {
-    warmupSharedDataStorage();
-  }, 1000);
+async function saveChatMessage(
+  userEmail: string | undefined,
+  sessionId: string,
+  userMessage: string,
+  assistantMessage: string,
+  folderCards: FolderCard[]
+): Promise<void> {
+  try {
+    const supabase = createServerSupabaseClient();
+    let userId: string | null = null;
+    if (userEmail) {
+      const { data: u } = await supabase
+        .from("users")
+        .select("id")
+        .eq("email", userEmail)
+        .single();
+      if (u) userId = u.id;
+    }
+
+    if (userId) {
+      await supabase.from("chat_messages").insert([
+        {
+          user_id: userId,
+          session_id: sessionId,
+          role: "user",
+          content: userMessage,
+        },
+        {
+          user_id: userId,
+          session_id: sessionId,
+          role: "assistant",
+          content: assistantMessage,
+          folder_cards: folderCards,
+        },
+      ]);
+    }
+  } catch (saveError) {
+    console.error("[Chat Save Error]:", saveError);
+  }
 }
 
 export async function POST(req: Request) {
@@ -89,7 +124,28 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Multi-Drive Retrieval in Parallel: Company Shared Drive + Corporate Data Storage + Personal OneDrive
+    // 2. Fast Semantic Cache check (<20ms exact or cosine similarity >= 0.92)
+    const cached = await getCachedResponse(rewrittenQuery, scope, userEmail);
+    if (cached) {
+      await saveChatMessage(
+        userEmail,
+        session_id,
+        trimmedMessage,
+        cached.answerMarkdown,
+        cached.folderCards
+      );
+      return NextResponse.json({
+        answer_markdown: cached.answerMarkdown,
+        folder_cards: cached.folderCards,
+        query: trimmedMessage,
+        rewritten_query: rewrittenQuery !== trimmedMessage ? rewrittenQuery : undefined,
+        timestamp: new Date().toISOString(),
+        duration_ms: Date.now() - startTime,
+        cached: true,
+      });
+    }
+
+    // 3. Multi-Drive Retrieval in Parallel: Company Shared Drive + Corporate Data Storage + Personal OneDrive
     const shouldSearchCompany = scope === "all" || scope === "company";
     const shouldSearchShared = scope === "all" || scope === "company";
     const shouldSearchPersonal = (scope === "all" || scope === "personal") && Boolean(userEmail);
@@ -147,46 +203,26 @@ export async function POST(req: Request) {
 
     const folderCards = groupItemsByFolder(combinedRecords);
 
-    // 3. Generate answer with strict URL fidelity guardrail
+    // 4. Generate answer with strict URL fidelity guardrail
     const answerMarkdown = await generateRagAnswer(
       rewrittenQuery,
       combinedRecords,
       folderCards
     );
 
-    // 4. Save chat message to Supabase if available and user exists in database
-    try {
-      const supabase = createServerSupabaseClient();
-      let userId: string | null = null;
-      if (userEmail) {
-        const { data: u } = await supabase
-          .from("users")
-          .select("id")
-          .eq("email", userEmail)
-          .single();
-        if (u) userId = u.id;
-      }
-
-      if (userId) {
-        await supabase.from("chat_messages").insert([
-          {
-            user_id: userId,
-            session_id,
-            role: "user",
-            content: trimmedMessage,
-          },
-          {
-            user_id: userId,
-            session_id,
-            role: "assistant",
-            content: answerMarkdown,
-            folder_cards: folderCards,
-          },
-        ]);
-      }
-    } catch (saveError) {
-      console.error("[Chat Save Error]:", saveError);
+    // 5. Populate semantic cache for future similar queries
+    if (folderCards.length > 0) {
+      setCachedResponse(rewrittenQuery, scope, folderCards, answerMarkdown, userEmail);
     }
+
+    // 6. Save chat message to Supabase
+    await saveChatMessage(
+      userEmail,
+      session_id,
+      trimmedMessage,
+      answerMarkdown,
+      folderCards
+    );
 
     const durationMs = Date.now() - startTime;
 

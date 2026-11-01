@@ -1,42 +1,9 @@
 import { getGraphAccessToken, isAzureConfigured } from "./auth";
-import { OneDriveRecord, RecordType } from "@/lib/types";
+import { OneDriveRecord, RecordType, OneDriveGraphItem } from "@/lib/types";
 import { STOP_WORDS } from "@/lib/retrieval/retriever";
 import { isCompanyEmail } from "@/lib/config";
 
-export interface GraphDriveItem {
-  id: string;
-  name?: string;
-  webUrl?: string;
-  folder?: {
-    childCount?: number;
-  };
-  file?: {
-    mimeType?: string;
-  };
-  image?: {
-    width?: number;
-    height?: number;
-  };
-  video?: {
-    duration?: number;
-    width?: number;
-    height?: number;
-  };
-  parentReference?: {
-    id?: string;
-    path?: string;
-    driveId?: string;
-    name?: string;
-  };
-  lastModifiedDateTime?: string;
-  deleted?: {
-    state?: string;
-  };
-  "@removed"?: {
-    reason?: string;
-  };
-  "@odata.type"?: string;
-}
+export type GraphDriveItem = OneDriveGraphItem;
 
 // In-memory cache for user personal drive items (3 minute TTL)
 interface CacheEntry {
@@ -310,7 +277,7 @@ export async function searchGraphDriveNative(
       const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 60;
       const cooldownMs = (isNaN(retryAfterSec) || retryAfterSec <= 0 ? 60 : retryAfterSec) * 1000;
       tripGraphCircuitBreaker(cooldownMs, `HTTP 429 Too Many Requests: Retry-After ${retryAfterSec}s`);
-      console.warn(`[Graph Search] HTTP 429 rate limit hit for ${normalizedEmail}. Tripping circuit breaker for ${retryAfterSec}s.`);
+       console.warn(`[Graph Search] HTTP 429 rate limit hit for ${normalizedEmail}. Tripping circuit breaker for ${retryAfterSec}s.`);
       return [];
     }
 
@@ -388,7 +355,7 @@ export async function fetchRecentGraphDriveItems(
     const data = (await res.json()) as { value?: GraphDriveItem[] };
     recordGraphSuccess();
     return (data.value || []).filter((item) => item.name && item.name !== "root");
-  } catch (err) {
+  } catch {
     recordGraphFailure("Recent items error");
     return [];
   }
@@ -752,7 +719,9 @@ export async function searchPersonalOneDrive(
       }
 
       if (records.length > 0) {
-        scheduleBackgroundUpsert(records);
+        if (isSharedStorage) {
+          scheduleBackgroundUpsert(records);
+        }
         return records;
       }
     }

@@ -12,7 +12,14 @@ import { rewriteQuery } from "@/lib/retrieval/retriever";
 import { isPublicPath } from "@/middleware";
 import { parseMarkdownToHtml } from "@/app/chat-ui";
 import { GoogleGenAI } from "@google/genai";
-import { OneDriveRecord } from "@/lib/types";
+import { OneDriveRecord, FolderCard } from "@/lib/types";
+import {
+  cosineSimilarity,
+  getCachedResponse,
+  setCachedResponse,
+  clearSemanticCache,
+  getSemanticCacheStats,
+} from "@/lib/retrieval/semantic-cache";
 import { determineRecordType } from "@/lib/crawler/onedrive-crawler";
 import { generateFallbackMetadata, generateTagsFromNames } from "@/lib/crawler/vision-describer";
 import {
@@ -27,10 +34,9 @@ import {
   resetAutoSyncCooldown,
   searchGraphDriveNative,
   mapGraphItemToOneDriveRecord,
-  cleanParentPath,
-  getFolderWebUrl,
   determineType,
   GraphDriveItem,
+  isSharedDataStorageAccount,
 } from "@/lib/graph/personal-drive";
 
 describe("1. Role-Based Access Control (RBAC) & Email Validation", () => {
@@ -1029,7 +1035,277 @@ describe("12. Delta Sync Tombstone & Deletion Resiliency", () => {
     const tags = generateTagsFromNames(undefined, undefined);
     assert.equal(typeof tags, "string");
   });
+
+  it("should reserve itemIdsToDelete only for items with explicit deleted markers, skipping items with missing/non-string name", () => {
+    const rawItems: any[] = [
+      { id: "del-explicit", deleted: { state: "deleted" } },
+      { id: "del-removed", "@removed": { reason: "deleted" } },
+      { id: "del-odata", "@odata.type": "#microsoft.graph.deleted" },
+      { id: "active-no-name", file: {} },
+      { id: "active-bad-name", name: 999 },
+      { id: "valid-file", name: "banner.png", file: {} },
+      // Repeated IDs: deleted first then restored active
+      { id: "resurrected-item", deleted: { state: "deleted" } },
+      { id: "resurrected-item", name: "restored.png", file: {} },
+      // Repeated IDs: active first then deleted
+      { id: "purged-item", name: "temp.png", file: {} },
+      { id: "purged-item", "@removed": { reason: "deleted" } },
+    ];
+
+    const itemIdsToDeleteSet = new Set<string>();
+    const activeItemsMap = new Map<string, any>();
+
+    for (const item of rawItems) {
+      if (!item.id) continue;
+
+      const isDeleted = Boolean(
+        item.deleted ||
+        item["@removed"] ||
+        item["@odata.type"] === "#microsoft.graph.deleted"
+      );
+
+      if (isDeleted) {
+        itemIdsToDeleteSet.add(item.id);
+        activeItemsMap.delete(item.id);
+      } else if (item.name && typeof item.name === "string" && item.name !== "root") {
+        activeItemsMap.set(item.id, item);
+        itemIdsToDeleteSet.delete(item.id);
+      }
+    }
+
+    const itemIdsToDelete = Array.from(itemIdsToDeleteSet);
+
+    // Explicit deletions present
+    assert.ok(itemIdsToDelete.includes("del-explicit"));
+    assert.ok(itemIdsToDelete.includes("del-removed"));
+    assert.ok(itemIdsToDelete.includes("del-odata"));
+
+    // Missing/non-string names excluded from both
+    assert.equal(itemIdsToDelete.includes("active-no-name"), false);
+    assert.equal(itemIdsToDelete.includes("active-bad-name"), false);
+    assert.equal(activeItemsMap.has("active-no-name"), false);
+    assert.equal(activeItemsMap.has("active-bad-name"), false);
+
+    // Repeated IDs resolve strictly by last occurrence
+    assert.equal(itemIdsToDelete.includes("resurrected-item"), false);
+    assert.equal(activeItemsMap.has("resurrected-item"), true);
+
+    assert.equal(itemIdsToDelete.includes("purged-item"), true);
+    assert.equal(activeItemsMap.has("purged-item"), false);
+
+    // Mutual exclusivity: no ID can ever exist in both sets
+    for (const id of itemIdsToDelete) {
+      assert.equal(activeItemsMap.has(id), false, `ID ${id} must not exist in both delete and active sets`);
+    }
+  });
+
+  it("should isolate personal OneDrive records and correctly distinguish shared data storage accounts", () => {
+    assert.equal(isSharedDataStorageAccount("data.brandelier@brandelier.in"), true);
+    assert.equal(isSharedDataStorageAccount("data.brandelier2@brandelier.in"), true);
+    assert.equal(isSharedDataStorageAccount("employee@brandelier.in"), false);
+    assert.equal(isSharedDataStorageAccount("ceo@brandelier.in"), false);
+
+    const rawItem: GraphDriveItem = {
+      id: "personal-file-123",
+      name: "confidential_photo.png",
+      image: {},
+      webUrl: "https://brandelier.sharepoint.com/personal/employee/confidential_photo.png",
+      parentReference: { path: "/drive/root:/Documents" },
+    };
+
+    const personalRecord = mapGraphItemToOneDriveRecord(rawItem, {
+      isPersonal: true,
+      driveScope: "personal",
+    });
+    assert.ok(personalRecord);
+    assert.equal(personalRecord.is_personal, true);
+    assert.equal(personalRecord.drive_scope, "personal");
+    assert.ok(personalRecord.item_id.startsWith("personal-"));
+
+    const sharedRecord = mapGraphItemToOneDriveRecord(rawItem, {
+      isPersonal: false,
+      driveScope: "shared_storage",
+      storageAccount: "data.brandelier@brandelier.in",
+    });
+    assert.ok(sharedRecord);
+    assert.equal(sharedRecord.is_personal, false);
+    assert.equal(sharedRecord.drive_scope, "shared_storage");
+    assert.equal(sharedRecord.storage_account, "data.brandelier@brandelier.in");
+  });
 });
+
+describe("13. Semantic Caching & Vector Similarity Engine", () => {
+  const sampleFolderCards: FolderCard[] = [
+    {
+      parent_folder_name: "Sula Vineyards 2026",
+      folder_path: "Projects / Sula Vineyards 2026",
+      folder_web_url: "https://brandelier.sharepoint.com/sula",
+      highest_similarity: 0.95,
+      matched_files: [
+        {
+          item_id: "sula-vid-1",
+          name: "sula_drone_raw.mp4",
+          file_web_url: "https://brandelier.sharepoint.com/sula/drone.mp4",
+          record_type: "video",
+        },
+      ],
+    },
+  ];
+
+  beforeEach(() => {
+    clearSemanticCache();
+  });
+
+  it("should calculate exact cosine similarity for identical, orthogonal, and zero vectors", () => {
+    const vecA = [0.5, 0.5, 0.5, 0.5];
+    const vecB = [0.5, 0.5, 0.5, 0.5];
+    assert.ok(Math.abs(cosineSimilarity(vecA, vecB) - 1.0) < 0.0001);
+
+    const vecOrthogonalA = [1, 0, 0];
+    const vecOrthogonalB = [0, 1, 0];
+    assert.equal(cosineSimilarity(vecOrthogonalA, vecOrthogonalB), 0);
+
+    assert.equal(cosineSimilarity([], []), 0);
+    assert.equal(cosineSimilarity([1, 2], [1, 2, 3]), 0);
+    assert.equal(cosineSimilarity([0, 0], [0, 0]), 0);
+  });
+
+  it("should return exact cache hit with 1.0 similarity for normalized query strings", async () => {
+    await setCachedResponse(
+      "sula vineyard raw footage",
+      "company",
+      sampleFolderCards,
+      "Found Sula footage."
+    );
+
+    const hit = await getCachedResponse("  SULA VINEYARD RAW FOOTAGE  ", "company");
+    assert.ok(hit);
+    assert.equal(hit.similarity, 1.0);
+    assert.equal(hit.answerMarkdown, "Found Sula footage.");
+    assert.equal(hit.folderCards.length, 1);
+
+    const stats = getSemanticCacheStats();
+    assert.equal(stats.hits, 1);
+  });
+
+  it("should return semantic cache hit for queries with high word overlap and reordering", async () => {
+    await setCachedResponse(
+      "drone footage sula vineyard 2026",
+      "company",
+      sampleFolderCards,
+      "Found Sula 2026 drone footage."
+    );
+
+    // Reordered query with high semantic overlap
+    const hit = await getCachedResponse(
+      "sula vineyard 2026 drone footage",
+      "company"
+    );
+    assert.ok(hit, "Reordered high-similarity query should hit semantic cache");
+    assert.ok(hit.similarity >= 0.90);
+    assert.equal(hit.answerMarkdown, "Found Sula 2026 drone footage.");
+  });
+
+  it("should return cache miss for completely unrelated queries", async () => {
+    await setCachedResponse(
+      "drone footage sula vineyard",
+      "company",
+      sampleFolderCards,
+      "Found Sula drone footage."
+    );
+
+    const miss = await getCachedResponse(
+      "employee quarterly financial tax audit reports",
+      "company"
+    );
+    assert.equal(miss, null);
+
+    const stats = getSemanticCacheStats();
+    assert.equal(stats.misses, 1);
+  });
+
+  it("should never cache empty results to allow live retries when new files are uploaded", async () => {
+    await setCachedResponse(
+      "empty search query",
+      "company",
+      [],
+      "No matching records found."
+    );
+
+    const hit = await getCachedResponse("empty search query", "company");
+    assert.equal(hit, null);
+    assert.equal(getSemanticCacheStats().size, 0);
+  });
+
+  it("should discriminate between video and image queries to prevent media-type cache pollution", async () => {
+    await setCachedResponse(
+      "sula campaign drone videos",
+      "company",
+      sampleFolderCards,
+      "Found Sula videos."
+    );
+
+    // Same brand/subject but asks for photos/images instead of videos
+    const imageQuery = await getCachedResponse(
+      "sula campaign drone photos",
+      "company"
+    );
+    assert.equal(
+      imageQuery,
+      null,
+      "Photo query must never collide with cached video query"
+    );
+  });
+
+  it("should strictly enforce scope and user isolation for personal drive searches", async () => {
+    await setCachedResponse(
+      "confidential project proposal",
+      "personal",
+      sampleFolderCards,
+      "Found Alice proposal.",
+      "alice@brandelier.in"
+    );
+
+    // Alice should hit her own cache
+    const aliceHit = await getCachedResponse(
+      "confidential project proposal",
+      "personal",
+      "alice@brandelier.in"
+    );
+    assert.ok(aliceHit);
+
+    // Bob must NEVER hit Alice's personal cache
+    const bobMiss = await getCachedResponse(
+      "confidential project proposal",
+      "personal",
+      "bob@brandelier.in"
+    );
+    assert.equal(bobMiss, null);
+
+    // Company scope must not hit personal scope cache
+    const companyMiss = await getCachedResponse(
+      "confidential project proposal",
+      "company"
+    );
+    assert.equal(companyMiss, null);
+  });
+
+  it("should cleanly reset semantic cache on clearSemanticCache", async () => {
+    await setCachedResponse(
+      "test query",
+      "company",
+      sampleFolderCards,
+      "Answer"
+    );
+    assert.equal(getSemanticCacheStats().size, 1);
+
+    clearSemanticCache();
+    assert.equal(getSemanticCacheStats().size, 0);
+    assert.equal(getSemanticCacheStats().hits, 0);
+    assert.equal(getSemanticCacheStats().misses, 0);
+  });
+});
+
 
 
 

@@ -111,6 +111,7 @@ export interface ChatResponse {
   rewritten_query?: string;
   timestamp: string;
   duration_ms?: number;
+  cached?: boolean;
 }
 
 /** Sync API Response */

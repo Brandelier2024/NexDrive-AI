@@ -1,12 +1,12 @@
 import ExcelJS from "exceljs";
-import { config } from "@/lib/config";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { getGraphAccessToken } from "@/lib/graph/auth";
+import { generateDeterministicVector } from "@/lib/retrieval/embeddings";
 import {
   extractCell,
   extractHeaderCell,
   generateMasterEditId,
-} from "./master-edits-parser.mjs";
+} from "./master-edits-parser";
 
 const DRIVE_ID = "b!4UkkSUBb7EONrBN-9t-yC8G83OVLLPVNki85r7d7cjAJTTBA0NswRoLhu1Ogh6mk";
 const ITEM_ID = "01WWQKDCQM3M6Q7CFNNJH2HDSBDPJCWXQJ";
@@ -22,37 +22,6 @@ function safeIsoDate(raw: string): string {
     }
   } catch {}
   return new Date().toISOString();
-}
-
-function generateDeterministicVector(text: string, dimensions = 768): number[] {
-  const vector = new Array(dimensions).fill(0);
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-
-  for (const word of words) {
-    let hash = 0;
-    for (let i = 0; i < word.length; i++) {
-      hash = (hash << 5) - hash + word.charCodeAt(i);
-      hash |= 0;
-    }
-    const idx = Math.abs(hash) % dimensions;
-    vector[idx] += 1.0;
-    const secondaryIdx = Math.abs(hash * 31 + 17) % dimensions;
-    vector[secondaryIdx] += 0.5;
-  }
-
-  let norm = 0;
-  for (let i = 0; i < dimensions; i++) norm += vector[i] * vector[i];
-  norm = Math.sqrt(norm);
-  if (norm > 0) {
-    for (let i = 0; i < dimensions; i++) vector[i] /= norm;
-  } else {
-    vector[0] = 1.0;
-  }
-  return vector;
 }
 
 export interface MasterEditsSyncResult {

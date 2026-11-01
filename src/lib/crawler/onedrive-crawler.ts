@@ -130,29 +130,29 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
     }
   }
 
-  // 2. Separate active items and deleted items (deduplicated by item.id)
-  const itemIdsToDelete: string[] = [];
+  // 2. Separate active items and deleted items (deduplicated by item.id, last occurrence wins)
+  const itemIdsToDeleteSet = new Set<string>();
   const activeItemsMap = new Map<string, OneDriveGraphItem>();
 
   for (const item of rawItems) {
+    if (!item.id) continue;
+
     const isDeleted = Boolean(
       item.deleted ||
       item["@removed"] ||
-      item["@odata.type"] === "#microsoft.graph.deleted" ||
-      !item.name ||
-      typeof item.name !== "string"
+      item["@odata.type"] === "#microsoft.graph.deleted"
     );
 
     if (isDeleted) {
-      if (item.id) {
-        itemIdsToDelete.push(item.id);
-        activeItemsMap.delete(item.id);
-      }
-    } else if (item.name !== "root") {
+      itemIdsToDeleteSet.add(item.id);
+      activeItemsMap.delete(item.id);
+    } else if (item.name && typeof item.name === "string" && item.name !== "root") {
       activeItemsMap.set(item.id, item);
+      itemIdsToDeleteSet.delete(item.id);
     }
   }
 
+  const itemIdsToDelete = Array.from(itemIdsToDeleteSet);
   const activeItems = Array.from(activeItemsMap.values());
 
   // 3. Build Folder Lookup Map for parent resolution
@@ -182,6 +182,39 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
   const recordsToUpsert: OneDriveRecord[] = [];
   const enableVision = config.gemini.enableVisionCaptioning && isGeminiConfigured();
 
+  function buildRecord(
+    item: OneDriveGraphItem & { name: string },
+    meta: { visualSummary: string | null; visualTags: string | null; thumbnailUrl?: string | null }
+  ): OneDriveRecord {
+    const recordType = determineRecordType(item)!;
+    const parentId = item.parentReference?.id ?? null;
+    const parentFolderInfo = parentId ? folderMap.get(parentId) : undefined;
+    const parentName = parentFolderInfo?.name ?? null;
+    const itemWebUrl = item.webUrl || "";
+    const folderWebUrl =
+      recordType === "folder" ? itemWebUrl : parentFolderInfo?.webUrl || itemWebUrl;
+    const folderPath =
+      recordType === "folder"
+        ? folderMap.get(item.id)?.path || cleanFolderPath(item.parentReference?.path)
+        : parentFolderInfo?.path || cleanFolderPath(item.parentReference?.path);
+
+    return {
+      item_id: item.id,
+      record_type: recordType,
+      name: item.name,
+      file_web_url: recordType === "folder" ? null : itemWebUrl,
+      parent_folder_id: parentId,
+      parent_folder_name: parentName,
+      folder_path: folderPath,
+      folder_web_url: folderWebUrl,
+      thumbnail_url: meta.thumbnailUrl ?? null,
+      media_type: item.file?.mimeType ?? (recordType === "video" ? "video/mp4" : "image/jpeg"),
+      visual_summary: meta.visualSummary,
+      visual_tags: meta.visualTags,
+      last_modified: item.lastModifiedDateTime ?? new Date().toISOString(),
+    };
+  }
+
   if (enableVision) {
     const BATCH_SIZE = 15;
     for (let i = 0; i < relevantItems.length; i += BATCH_SIZE) {
@@ -189,15 +222,7 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
       const chunkResults = await Promise.all(
         chunk.map(async (item) => {
           const recordType = determineRecordType(item)!;
-          const parentId = item.parentReference?.id ?? null;
-          const parentFolderInfo = parentId ? folderMap.get(parentId) : undefined;
-          const parentName = parentFolderInfo?.name ?? null;
-          const itemWebUrl = item.webUrl || "";
-          const folderWebUrl =
-            recordType === "folder"
-              ? itemWebUrl
-              : parentFolderInfo?.webUrl || itemWebUrl;
-
+          const parentFolderInfo = item.parentReference?.id ? folderMap.get(item.parentReference.id) : undefined;
           const folderPath =
             recordType === "folder"
               ? folderMap.get(item.id)?.path || cleanFolderPath(item.parentReference?.path)
@@ -217,21 +242,7 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
             visualTags = folderPath.replace(/[/_-]/g, ", ");
           }
 
-          return {
-            item_id: item.id,
-            record_type: recordType,
-            name: item.name,
-            file_web_url: recordType === "folder" ? null : itemWebUrl,
-            parent_folder_id: parentId,
-            parent_folder_name: parentName,
-            folder_path: folderPath,
-            folder_web_url: folderWebUrl,
-            thumbnail_url: thumbnailUrl,
-            media_type: item.file?.mimeType ?? (recordType === "video" ? "video/mp4" : "image/jpeg"),
-            visual_summary: visualSummary,
-            visual_tags: visualTags,
-            last_modified: item.lastModifiedDateTime ?? new Date().toISOString(),
-          } as OneDriveRecord;
+          return buildRecord(item, { visualSummary, visualTags, thumbnailUrl });
         })
       );
 
@@ -241,15 +252,7 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
     // Ultra-fast in-memory path (0.05s for 20,000+ items)
     for (const item of relevantItems) {
       const recordType = determineRecordType(item)!;
-      const parentId = item.parentReference?.id ?? null;
-      const parentFolderInfo = parentId ? folderMap.get(parentId) : undefined;
-      const parentName = parentFolderInfo?.name ?? null;
-      const itemWebUrl = item.webUrl || "";
-      const folderWebUrl =
-        recordType === "folder"
-          ? itemWebUrl
-          : parentFolderInfo?.webUrl || itemWebUrl;
-
+      const parentFolderInfo = item.parentReference?.id ? folderMap.get(item.parentReference.id) : undefined;
       const folderPath =
         recordType === "folder"
           ? folderMap.get(item.id)?.path || cleanFolderPath(item.parentReference?.path)
@@ -257,27 +260,18 @@ export async function crawlOneDriveDelta(previousDeltaLink?: string | null): Pro
 
       const fallback = generateFallbackMetadata(item.name, folderPath);
 
-      recordsToUpsert.push({
-        item_id: item.id,
-        record_type: recordType,
-        name: item.name,
-        file_web_url: recordType === "folder" ? null : itemWebUrl,
-        parent_folder_id: parentId,
-        parent_folder_name: parentName,
-        folder_path: folderPath,
-        folder_web_url: folderWebUrl,
-        thumbnail_url: null,
-        media_type: item.file?.mimeType ?? (recordType === "video" ? "video/mp4" : "image/jpeg"),
-        visual_summary:
-          recordType === "folder"
-            ? `Folder "${item.name}" containing company media assets at ${folderPath}`
-            : fallback.summary,
-        visual_tags:
-          recordType === "folder"
-            ? folderPath.replace(/[/_-]/g, ", ")
-            : fallback.tags,
-        last_modified: item.lastModifiedDateTime ?? new Date().toISOString(),
-      });
+      recordsToUpsert.push(
+        buildRecord(item, {
+          visualSummary:
+            recordType === "folder"
+              ? `Folder "${item.name}" containing company media assets at ${folderPath}`
+              : fallback.summary,
+          visualTags:
+            recordType === "folder"
+              ? folderPath.replace(/[/_-]/g, ", ")
+              : fallback.tags,
+        })
+      );
     }
     console.log(`[Crawler] Fast metadata prepared ${recordsToUpsert.length} items.`);
   }

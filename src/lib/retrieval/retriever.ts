@@ -62,7 +62,7 @@ ${trimmed}`;
           httpOptions: { timeout: 2000 },
         },
       })
-      .catch((err) => {
+      .catch(() => {
         // Prevent unhandledRejection if timed out or aborted
         return null;
       });
