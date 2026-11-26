@@ -2,9 +2,8 @@ name: Supabase Keep-Alive
 
 on:
   schedule:
-    # Runs at 09:00 UTC on days 1, 6, 11, 16, 21, 26, 31 (max 5-day gap < 7-day pause limit)
     - cron: "0 9 */5 * *"
-  workflow_dispatch: # Allows manual testing from the GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   ping:
@@ -15,12 +14,26 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+          URL=$(printf '%s' "$SUPABASE_URL" | tr -d "\"'\r\n " )
+          KEY=$(printf '%s' "$SUPABASE_ANON_KEY" | tr -d "\"'\r\n " )
+
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
             echo "Missing SUPABASE_URL or SUPABASE_ANON_KEY secret"
             exit 1
           fi
 
-          curl -fsS \
-            "${SUPABASE_URL%/}/rest/v1/sync_state?select=id&limit=1" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}"
+          if [[ "$KEY" == *.*.* ]]; then
+            HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
+              "${URL%/}/rest/v1/sync_state?select=id&limit=1" \
+              -H "apikey: ${KEY}" \
+              -H "Authorization: Bearer ${KEY}")
+          else
+            HTTP_CODE=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
+              "${URL%/}/rest/v1/sync_state?select=id&limit=1" \
+              -H "apikey: ${KEY}")
+          fi
+
+          cat /tmp/resp.txt
+          echo ""
+          echo "HTTP status: $HTTP_CODE"
+          test "$HTTP_CODE" -ge 200 -a "$HTTP_CODE" -lt 300
